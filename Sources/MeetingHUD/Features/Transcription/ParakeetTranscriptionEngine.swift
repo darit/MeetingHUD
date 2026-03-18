@@ -165,11 +165,17 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
 
     // MARK: - Private
 
+    private var chunkCount = 0
+
     private func processChunk(_ samples: [Float], offset: TimeInterval) {
         guard let model else { return }
+        chunkCount += 1
 
         // Use transcribeWithLanguage to get confidence score
         let result = model.transcribeWithLanguage(audio: samples, sampleRate: 16000, language: language)
+
+        let preview = result.text.prefix(60).trimmingCharacters(in: .whitespacesAndNewlines)
+        print("[ParakeetEngine] Chunk #\(chunkCount): conf=\(String(format: "%.2f", result.confidence)) lang=\(result.language ?? "?") text=\"\(preview)\"")
 
         // Log auto-detected language on first confident chunk
         if language == nil && !languageLocked {
@@ -181,7 +187,7 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         }
 
         // Skip low-confidence chunks (likely noise/filler like "Uh", "The")
-        guard result.confidence > 0.3 else { return }
+        guard result.confidence > 0.1 else { return }
 
         let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
