@@ -159,6 +159,11 @@ struct MenuBarView: View {
                 appState.toggleMute()
             }
 
+            Toggle("Noise Cancellation", isOn: Binding(
+                get: { appState.audioCaptureManager.isNoiseCancellationEnabled },
+                set: { appState.audioCaptureManager.isNoiseCancellationEnabled = $0 }
+            ))
+
             Toggle("Auto-Detect Meetings", isOn: $appState.autoDetectEnabled)
 
             Divider()

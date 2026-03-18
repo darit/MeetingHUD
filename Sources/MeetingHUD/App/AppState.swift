@@ -572,6 +572,9 @@ final class AppState {
     func toggleMute() {
         isMicMuted.toggle()
         audioCaptureManager.isMicMuted = isMicMuted
+        if isMicMuted {
+            audioCaptureManager.isNoiseCancellationEnabled = false
+        }
         addDebug(isMicMuted ? "Mic muted" : "Mic unmuted")
     }
 

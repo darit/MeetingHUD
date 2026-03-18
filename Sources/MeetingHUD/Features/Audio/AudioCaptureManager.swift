@@ -53,6 +53,9 @@ final class AudioCaptureManager: @unchecked Sendable {
     var isMicMuted = false
     /// Whether mic is active alongside system audio.
     var hasMicCapture = false
+    /// Enables voice processing (AEC + noise suppression) on mic. Off by default
+    /// because it causes macOS to lower system audio volume ("ducking").
+    var isNoiseCancellationEnabled = false
 
     enum CaptureMode: String {
         case processTap = "System Audio (Process Tap)"
@@ -369,9 +372,16 @@ final class AudioCaptureManager: @unchecked Sendable {
         // This activates Acoustic Echo Cancellation (AEC) + noise suppression +
         // automatic gain control — strips speaker output from the mic signal so
         // we don't double-capture system audio.
-        // Note: Voice processing (AEC) is NOT enabled because it causes macOS to
-        // "duck" (lower volume of) all other system audio — Chrome, YouTube, etc.
-        // get quieter. The mic mute button handles echo control instead.
+        // Voice processing (AEC + noise suppression) — off by default because
+        // it causes macOS to duck system audio volume (Chrome, YouTube, etc.).
+        if isNoiseCancellationEnabled {
+            do {
+                try engine.inputNode.setVoiceProcessingEnabled(true)
+                print("[AudioCapture] Noise cancellation enabled on mic (system audio may be ducked)")
+            } catch {
+                print("[AudioCapture] Noise cancellation unavailable: \(error)")
+            }
+        }
 
         let continuation = self.streamContinuation
         let levelPtr = self._micLevelStorage
