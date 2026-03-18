@@ -1,0 +1,44 @@
+Business Source License 1.1
+
+Licensor:  Daniel Rodriguez
+Licensed Work:  MeetingHUD
+                The Licensed Work is (c) 2026 Daniel Rodriguez.
+
+Additional Use Grant:
+  You may use the Licensed Work for non-commercial, personal, educational,
+  and research purposes. You may NOT use the Licensed Work, or any
+  substantial portion of it, to build or operate a competing commercial
+  product or service without explicit written permission from the Licensor.
+
+Change Date:  2030-03-18
+
+Change License:  Apache License, Version 2.0
+
+Terms:
+
+  The Licensor grants you a non-exclusive, worldwide, royalty-free,
+  non-sublicensable, non-transferable license to use, copy, modify,
+  and redistribute the Licensed Work, subject to the limitations in
+  the Additional Use Grant above.
+
+  Effective on the Change Date, or the fourth anniversary of the first
+  publicly available distribution of a specific version of the Licensed
+  Work, whichever comes first, the Licensor hereby grants you rights
+  under the terms of the Change License, and the rights granted under
+  the Additional Use Grant are no longer limited.
+
+  THE LICENSED WORK IS PROVIDED "AS IS". THE LICENSOR HEREBY DISCLAIMS
+  ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING ALL IMPLIED WARRANTIES
+  OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+  NON-INFRINGEMENT.
+
+For the complete BSL 1.1 text, see: https://mariadb.com/bsl11/
+
+---
+
+NOTICE: The concepts, architecture, and design patterns embodied in this
+software represent the intellectual property of Daniel Rodriguez. While
+the source code is publicly viewable under the terms above, the overall
+product concept — real-time local audio intelligence with content-type
+detection, speaker profiling, and contextual AI insights — remains the
+creative work of the author.

@@ -1,0 +1,495 @@
+import SwiftUI
+import SwiftData
+
+/// A sheet showing previous meetings: list, details, insights, and LLM Q&A.
+struct MeetingHistorySheet: View {
+    @Bindable var appState: AppState
+    @Query(sort: \Meeting.date, order: .reverse) private var meetings: [Meeting]
+    @State private var selected: Meeting?
+
+    var body: some View {
+        HSplitView {
+            // Left: meeting list
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Past Meetings")
+                        .font(.headline)
+                    Spacer()
+                    Button {
+                        appState.showHistorySheet = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                            .font(.title3)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+
+                Divider()
+
+                if meetings.isEmpty {
+                    ContentUnavailableView(
+                        "No meetings yet",
+                        systemImage: "calendar.badge.clock",
+                        description: Text("Meetings will appear here after you record and stop them.")
+                    )
+                    .frame(maxHeight: .infinity)
+                } else {
+                    List(meetings, selection: $selected) { meeting in
+                        MeetingListRow(meeting: meeting)
+                            .tag(meeting)
+                    }
+                    .listStyle(.sidebar)
+                }
+            }
+            .frame(minWidth: 220, maxWidth: 280)
+
+            // Right: detail + Q&A
+            if let meeting = selected {
+                MeetingDetailView(meeting: meeting, appState: appState)
+            } else {
+                VStack {
+                    Image(systemName: "arrow.left")
+                        .font(.largeTitle)
+                        .foregroundStyle(.tertiary)
+                    Text("Select a meeting")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(minWidth: 700, minHeight: 500)
+        .onAppear {
+            selected = meetings.first
+        }
+    }
+}
+
+// MARK: - Meeting List Row
+
+private struct MeetingListRow: View {
+    let meeting: Meeting
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(meeting.title.isEmpty ? "Untitled Meeting" : meeting.title)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+            HStack(spacing: 6) {
+                Text(meeting.date.formatted(date: .abbreviated, time: .shortened))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                if meeting.duration > 0 {
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    Text(formatDuration(meeting.duration))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func formatDuration(_ d: TimeInterval) -> String {
+        let m = Int(d) / 60
+        return m < 60 ? "\(m)m" : "\(m / 60)h \(m % 60)m"
+    }
+}
+
+// MARK: - Meeting Detail View
+
+private struct MeetingDetailView: View {
+    let meeting: Meeting
+    @Bindable var appState: AppState
+    @State private var chatText = ""
+    @State private var chatMessages: [ChatMessage] = []
+    @State private var isThinking = false
+    @State private var streamingText = ""
+
+    private var decompressedSegments: [TranscriptSegment] {
+        guard let data = meeting.compressedTranscript else { return [] }
+        guard let decompressed = try? (data as NSData).decompressed(using: .zlib) as Data else { return [] }
+        return (try? JSONDecoder().decode([TranscriptSegment].self, from: decompressed)) ?? []
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(meeting.title.isEmpty ? "Untitled Meeting" : meeting.title)
+                            .font(.title3.weight(.semibold))
+                        HStack(spacing: 8) {
+                            Label(meeting.date.formatted(date: .long, time: .shortened), systemImage: "calendar")
+                            if meeting.duration > 0 {
+                                Label(formatDuration(meeting.duration), systemImage: "clock")
+                            }
+                            if !meeting.sourceApp.isEmpty && meeting.sourceApp != "Unknown" {
+                                Label(meeting.sourceApp, systemImage: "video")
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+
+            Divider()
+
+            // Scrollable content
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+
+                    // Summary
+                    if !meeting.summary.isEmpty {
+                        SectionBlock(title: "Summary", icon: "doc.text.fill", color: .blue) {
+                            Text(meeting.summary)
+                                .font(.system(size: 12))
+                                .lineSpacing(3)
+                        }
+                    }
+
+                    // Participants
+                    if !meeting.participations.isEmpty {
+                        let named = meeting.participations.filter { $0.interlocutor != nil }
+                        if !named.isEmpty {
+                            SectionBlock(title: "Participants", icon: "person.2.fill", color: .purple) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    ForEach(named.sorted { $0.talkTime > $1.talkTime }) { p in
+                                        ParticipantRow(participation: p)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Topics
+                    if !meeting.topics.isEmpty {
+                        SectionBlock(title: "Topics", icon: "list.bullet", color: .teal) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(meeting.topics.sorted { $0.startTime < $1.startTime }) { topic in
+                                    HStack(alignment: .top, spacing: 6) {
+                                        Image(systemName: "circle.fill")
+                                            .font(.system(size: 5))
+                                            .foregroundStyle(.teal)
+                                            .padding(.top, 4)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(topic.name)
+                                                .font(.system(size: 12, weight: .medium))
+                                            if !topic.summary.isEmpty {
+                                                Text(topic.summary)
+                                                    .font(.system(size: 11))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Action Items
+                    if !meeting.actionItems.isEmpty {
+                        SectionBlock(title: "Action Items", icon: "checkmark.circle", color: .green) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(meeting.actionItems) { item in
+                                    HStack(alignment: .top, spacing: 6) {
+                                        Image(systemName: item.status == .done ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(item.status == .done ? .green : .secondary)
+                                            .font(.system(size: 12))
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(item.desc)
+                                                .font(.system(size: 12))
+                                                .strikethrough(item.status == .done)
+                                            if let owner = item.owner?.name {
+                                                Text(owner)
+                                                    .font(.system(size: 10))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(20)
+            }
+
+            Divider()
+
+            // Q&A with this meeting
+            VStack(spacing: 0) {
+                if !chatMessages.isEmpty || isThinking {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 6) {
+                                ForEach(chatMessages) { msg in
+                                    HistoryChatBubble(message: msg)
+                                        .id(msg.id)
+                                }
+                                if isThinking {
+                                    HistoryStreamingView(text: streamingText)
+                                        .id("stream")
+                                }
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                        }
+                        .frame(height: 140)
+                        .onChange(of: chatMessages.count) { _, _ in
+                            if let last = chatMessages.last {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
+                        }
+                    }
+                    Divider().opacity(0.3)
+                }
+
+                // Input
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                    TextField("Ask about this meeting…", text: $chatText)
+                        .font(.system(size: 12))
+                        .textFieldStyle(.plain)
+                        .onSubmit { sendQuestion() }
+
+                    if isThinking {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Button {
+                            sendQuestion()
+                        } label: {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 16))
+                                .foregroundStyle(chatText.isEmpty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.blue))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(chatText.isEmpty)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+            }
+        }
+    }
+
+    private func sendQuestion() {
+        let q = chatText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty, !isThinking else { return }
+        chatText = ""
+        chatMessages.append(ChatMessage(role: .user, content: q))
+        isThinking = true
+        streamingText = ""
+
+        let meeting = self.meeting
+        let segments = decompressedSegments
+        let llm = appState.analysisLLMProvider
+
+        Task {
+            let isAvail = await llm.isAvailable
+            guard isAvail else {
+                await MainActor.run {
+                    chatMessages.append(ChatMessage(
+                        role: .assistant,
+                        content: "No LLM available. Load a local model or switch to Claude in the menu bar."
+                    ))
+                    isThinking = false
+                }
+                return
+            }
+
+            let context = buildMeetingContext(meeting: meeting, segments: segments)
+            var messages: [ChatMessage] = [
+                ChatMessage(role: .system, content: PromptTemplates.pastMeetingQA),
+                ChatMessage(role: .user, content: "Meeting context:\n\n\(context)"),
+                ChatMessage(role: .assistant, content: "I have the meeting context. Ask me anything about it."),
+            ]
+            let recentHistory = Array(chatMessages.suffix(6))
+            messages.append(contentsOf: recentHistory)
+
+            do {
+                let stream = try await llm.stream(messages: messages)
+                var full = ""
+                for await chunk in stream {
+                    full += chunk
+                    await MainActor.run { streamingText = full }
+                }
+                await MainActor.run {
+                    chatMessages.append(ChatMessage(role: .assistant, content: full))
+                    streamingText = ""
+                    isThinking = false
+                }
+            } catch {
+                await MainActor.run {
+                    chatMessages.append(ChatMessage(role: .assistant, content: "Error: \(error.localizedDescription)"))
+                    isThinking = false
+                }
+            }
+        }
+    }
+
+    private func buildMeetingContext(meeting: Meeting, segments: [TranscriptSegment]) -> String {
+        var parts: [String] = []
+        parts.append("Title: \(meeting.title)")
+        parts.append("Date: \(meeting.date.formatted(date: .complete, time: .shortened))")
+        if meeting.duration > 0 {
+            parts.append("Duration: \(formatDuration(meeting.duration))")
+        }
+        if !meeting.summary.isEmpty {
+            parts.append("Summary:\n\(meeting.summary)")
+        }
+        if !meeting.topics.isEmpty {
+            let topicLines = meeting.topics.sorted { $0.startTime < $1.startTime }.map { "- \($0.name): \($0.summary)" }
+            parts.append("Topics:\n\(topicLines.joined(separator: "\n"))")
+        }
+        if !meeting.actionItems.isEmpty {
+            let actionLines = meeting.actionItems.map { item -> String in
+                let owner = item.owner?.name.map { " [\($0)]" } ?? ""
+                return "- \(item.desc)\(owner)"
+            }
+            parts.append("Action items:\n\(actionLines.joined(separator: "\n"))")
+        }
+        let named = meeting.participations.filter { $0.interlocutor != nil }
+        if !named.isEmpty {
+            let pLines = named.sorted { $0.talkTime > $1.talkTime }.map { p -> String in
+                let name = p.interlocutor?.name ?? "Unknown"
+                return "- \(name): \(Int(p.talkPercent))% talk time"
+            }
+            parts.append("Participants:\n\(pLines.joined(separator: "\n"))")
+        }
+        if !segments.isEmpty {
+            let transcript = segments.suffix(80).map { "[\($0.speakerLabel)] (\(formatTime($0.startTime))): \($0.text)" }
+                .joined(separator: "\n")
+            parts.append("Transcript (excerpt):\n\(transcript)")
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private func formatDuration(_ d: TimeInterval) -> String {
+        let m = Int(d) / 60
+        return m < 60 ? "\(m) min" : "\(m / 60)h \(m % 60)m"
+    }
+
+    private func formatTime(_ t: TimeInterval) -> String {
+        let m = Int(t) / 60; let s = Int(t) % 60
+        return String(format: "%d:%02d", m, s)
+    }
+}
+
+// MARK: - Supporting Views
+
+private struct SectionBlock<Content: View>: View {
+    let title: String
+    let icon: String
+    let color: Color
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(color)
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(color.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(color.opacity(0.15), lineWidth: 1)
+        )
+    }
+}
+
+private struct ParticipantRow: View {
+    let participation: MeetingParticipation
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(participation.interlocutor?.name ?? "Unknown")
+                    .font(.system(size: 12, weight: .medium))
+                if participation.talkPercent > 0 {
+                    Text("\(Int(participation.talkPercent))% talk time · \(participation.interventionCount) turns")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            // Sentiment indicator
+            if participation.avgSentiment != 0 {
+                let sentiment = participation.avgSentiment
+                Circle()
+                    .fill(sentiment > 0.2 ? .green : sentiment < -0.2 ? .red : .secondary)
+                    .frame(width: 8, height: 8)
+                    .help(sentiment > 0.2 ? "Positive" : sentiment < -0.2 ? "Negative" : "Neutral")
+            }
+        }
+    }
+}
+
+private struct HistoryChatBubble: View {
+    let message: ChatMessage
+
+    var body: some View {
+        HStack {
+            if message.role == .user { Spacer(minLength: 40) }
+            Text(message.content)
+                .font(.system(size: 12))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    message.role == .user
+                        ? AnyShapeStyle(.blue.opacity(0.2))
+                        : AnyShapeStyle(.secondary.opacity(0.1)),
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
+                .textSelection(.enabled)
+            if message.role == .assistant { Spacer(minLength: 40) }
+        }
+    }
+}
+
+private struct HistoryStreamingView: View {
+    let text: String
+    @State private var dotCount = 1
+    @State private var timer: Timer?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            HStack(spacing: 2) {
+                ForEach(0..<3, id: \.self) { i in
+                    Circle()
+                        .fill(Color.blue.opacity(i < dotCount ? 0.8 : 0.2))
+                        .frame(width: 4, height: 4)
+                }
+            }
+            .padding(.top, 3)
+            Text(text.isEmpty ? "Thinking…" : text)
+                .font(.system(size: 12))
+                .foregroundStyle(text.isEmpty ? .secondary : .primary)
+                .lineLimit(10)
+            Spacer(minLength: 40)
+        }
+        .onAppear {
+            timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { _ in
+                dotCount = (dotCount % 3) + 1
+            }
+        }
+        .onDisappear {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+}
