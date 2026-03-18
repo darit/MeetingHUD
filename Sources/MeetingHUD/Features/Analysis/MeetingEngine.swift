@@ -394,6 +394,16 @@ final class MeetingEngine {
 
     private func applyNewTopics(_ newTopics: [TopicExtractor.ExtractedTopic]) {
         for extracted in newTopics {
+            // Deduplicate: skip if a topic with a very similar name already exists
+            let lowerName = extracted.name.lowercased()
+            let isDuplicate = topics.contains { existing in
+                let existingLower = existing.name.lowercased()
+                return existingLower == lowerName
+                    || existingLower.contains(lowerName)
+                    || lowerName.contains(existingLower)
+            }
+            guard !isDuplicate else { continue }
+
             // Close previous topic
             if var last = topics.last, last.endTime == nil {
                 last.endTime = extracted.startTime

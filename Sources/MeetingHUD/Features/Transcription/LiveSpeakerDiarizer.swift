@@ -175,10 +175,11 @@ actor LiveSpeakerDiarizer {
                 idToLabel[id] = stableLabels[index]
             }
 
-            // Log distribution
+            // Log distribution with time ranges
             for (id, label) in idToLabel.sorted(by: { $0.key < $1.key }) {
-                let count = result.segments.filter { $0.speakerId == id }.count
-                log("  \(label): \(count) diar segs")
+                let spkSegs = result.segments.filter { $0.speakerId == id }
+                let totalDur = spkSegs.reduce(0.0) { $0 + Double($1.endTime - $1.startTime) }
+                log("  \(label): \(spkSegs.count) segs, \(String(format: "%.0f", totalDur))s total")
             }
 
             // Align diarization to transcript segments by temporal overlap
