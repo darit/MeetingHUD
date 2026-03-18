@@ -204,13 +204,56 @@ actor LiveSpeakerDiarizer {
         }
         if speakerCount > maxSpeakersSeen { maxSpeakersSeen = speakerCount }
 
-        // Assign stable labels
+        // Assign stable labels by matching diarization speakers to existing
+        // transcript labels via temporal overlap. This prevents speaker ID flips
+        // between runs (where Pyannote arbitrarily swaps speaker 0 and 1).
         while stableLabels.count < seenIDs.count {
             stableLabels.append(Constants.speakerLabel(index: stableLabels.count))
         }
         var idToLabel: [Int: String] = [:]
-        for (index, id) in seenIDs.enumerated() {
-            idToLabel[id] = stableLabels[index]
+
+        if !segments.isEmpty && runCount > 1 {
+            // Match diarization IDs to existing labels by overlap
+            var usedLabels = Set<String>()
+            for id in seenIDs {
+                let diarSegs = segmentsForSpeaker(id)
+                var bestLabel: String?
+                var bestOverlap: Float = 0
+
+                // Find which existing transcript label this diar speaker overlaps most with
+                let existingLabels = Set(segments.map(\.speakerLabel))
+                for label in existingLabels {
+                    guard !usedLabels.contains(label) else { continue }
+                    let labelSegs = segments.filter { $0.speakerLabel == label }
+                    var totalOverlap: Float = 0
+                    for dSeg in diarSegs {
+                        for tSeg in labelSegs {
+                            let o = max(0, min(Float(tSeg.endTime), dSeg.endTime) - max(Float(tSeg.startTime), dSeg.startTime))
+                            totalOverlap += o
+                        }
+                    }
+                    if totalOverlap > bestOverlap {
+                        bestOverlap = totalOverlap
+                        bestLabel = label
+                    }
+                }
+
+                if let label = bestLabel, bestOverlap > 0 {
+                    idToLabel[id] = label
+                    usedLabels.insert(label)
+                }
+            }
+            // Assign new labels for unmatched speakers
+            for id in seenIDs where idToLabel[id] == nil {
+                let nextLabel = stableLabels.first { !usedLabels.contains($0) } ?? Constants.speakerLabel(index: usedLabels.count)
+                idToLabel[id] = nextLabel
+                usedLabels.insert(nextLabel)
+            }
+        } else {
+            // First run: assign in order of appearance
+            for (index, id) in seenIDs.enumerated() {
+                idToLabel[id] = stableLabels[index]
+            }
         }
 
         // Log distribution
