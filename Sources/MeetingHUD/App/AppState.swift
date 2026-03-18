@@ -216,23 +216,20 @@ final class AppState {
     var currentTopicName: String?
 
     /// Detected content type (meeting, standup, news, podcast, etc.).
-    var detectedContentType: ContentTypeClassifier.ContentType {
-        meetingEngine?.contentTypeClassifier.detectedType ?? .unknown
-    }
+    /// Stored so it persists after meeting engine is stopped.
+    var detectedContentType: ContentTypeClassifier.ContentType = .unknown
 
     /// Confidence of the content type classification.
-    var contentTypeConfidence: Double {
-        meetingEngine?.contentTypeClassifier.confidence ?? 0
-    }
+    var contentTypeConfidence: Double = 0
 
-    /// Read-only access to current topics (from MeetingEngine).
-    var currentTopics: [TopicInfo] { meetingEngine?.topics ?? [] }
+    /// Topics detected during the meeting. Stored so they persist after stop.
+    var currentTopics: [TopicInfo] = []
 
-    /// Read-only access to current action items (from MeetingEngine).
-    var currentActionItems: [SignalDetector.DetectedAction] { meetingEngine?.detectedActions ?? [] }
+    /// Action items detected during the meeting.
+    var currentActionItems: [SignalDetector.DetectedAction] = []
 
-    /// Read-only access to key statements (from MeetingEngine).
-    var currentKeyStatements: [SignalDetector.DetectedStatement] { meetingEngine?.keyStatements ?? [] }
+    /// Key statements detected during the meeting.
+    var currentKeyStatements: [SignalDetector.DetectedStatement] = []
 
     /// Live meeting analytics engine (active during recording).
     private var meetingEngine: MeetingEngine?
@@ -462,22 +459,23 @@ final class AppState {
                 newTopic: topicName,
                 allSegments: self.activeTranscriptSegments,
                 speakers: self.speakers,
-                topics: self.meetingEngine?.topics ?? [],
-                actionItems: self.meetingEngine?.detectedActions ?? [],
+                topics: self.currentTopics,
+                actionItems: self.currentActionItems,
                 agenda: self.meetingAgenda.isEmpty ? nil : self.meetingAgenda,
-                contentType: self.meetingEngine?.contentTypeClassifier.detectedType
+                contentType: self.detectedContentType
             )
         }
         engine.onAnalysisPassComplete = { [weak self] in
             guard let self else { return }
+            self.syncInsightsFromEngine()
             self.recommendationAgent.onPeriodicCheck(
                 allSegments: self.activeTranscriptSegments,
                 speakers: self.speakers,
-                topics: self.meetingEngine?.topics ?? [],
-                actionItems: self.meetingEngine?.detectedActions ?? [],
+                topics: self.currentTopics,
+                actionItems: self.currentActionItems,
                 agenda: self.meetingAgenda.isEmpty ? nil : self.meetingAgenda,
                 currentTopic: self.currentTopicName,
-                contentType: self.meetingEngine?.contentTypeClassifier.detectedType
+                contentType: self.detectedContentType
             )
         }
         engine.onSpeakerDominanceShift = { [weak self] speaker, percent in
@@ -487,10 +485,10 @@ final class AppState {
                 percent: percent,
                 allSegments: self.activeTranscriptSegments,
                 speakers: self.speakers,
-                topics: self.meetingEngine?.topics ?? [],
-                actionItems: self.meetingEngine?.detectedActions ?? [],
+                topics: self.currentTopics,
+                actionItems: self.currentActionItems,
                 agenda: self.meetingAgenda.isEmpty ? nil : self.meetingAgenda,
-                contentType: self.meetingEngine?.contentTypeClassifier.detectedType
+                contentType: self.detectedContentType
             )
         }
 
@@ -563,11 +561,27 @@ final class AppState {
         UserDefaults.standard.set(next ?? "auto", forKey: "transcriptionLanguage")
     }
 
+    /// Sync stored insight properties from the live meeting engine.
+    private func syncInsightsFromEngine() {
+        guard let engine = meetingEngine else { return }
+        currentTopics = engine.topics
+        currentActionItems = engine.detectedActions
+        currentKeyStatements = engine.keyStatements
+        currentTopicName = engine.currentTopicName
+        detectedContentType = engine.contentTypeClassifier.detectedType
+        contentTypeConfidence = engine.contentTypeClassifier.confidence
+    }
+
     /// Clear transcript, speakers, and recommendations without stopping recording.
     func clearLiveData() {
         activeTranscriptSegments = []
         speakers = []
         recommendations = []
+        currentTopics = []
+        currentActionItems = []
+        currentKeyStatements = []
+        currentTopicName = nil
+        detectedContentType = .unknown
         recordingError = nil
     }
 
@@ -811,22 +825,23 @@ final class AppState {
                 newTopic: topicName,
                 allSegments: self.activeTranscriptSegments,
                 speakers: self.speakers,
-                topics: self.meetingEngine?.topics ?? [],
-                actionItems: self.meetingEngine?.detectedActions ?? [],
+                topics: self.currentTopics,
+                actionItems: self.currentActionItems,
                 agenda: self.meetingAgenda.isEmpty ? nil : self.meetingAgenda,
-                contentType: self.meetingEngine?.contentTypeClassifier.detectedType
+                contentType: self.detectedContentType
             )
         }
         engine.onAnalysisPassComplete = { [weak self] in
             guard let self else { return }
+            self.syncInsightsFromEngine()
             self.recommendationAgent.onPeriodicCheck(
                 allSegments: self.activeTranscriptSegments,
                 speakers: self.speakers,
-                topics: self.meetingEngine?.topics ?? [],
-                actionItems: self.meetingEngine?.detectedActions ?? [],
+                topics: self.currentTopics,
+                actionItems: self.currentActionItems,
                 agenda: self.meetingAgenda.isEmpty ? nil : self.meetingAgenda,
                 currentTopic: self.currentTopicName,
-                contentType: self.meetingEngine?.contentTypeClassifier.detectedType
+                contentType: self.detectedContentType
             )
         }
         engine.onSpeakerDominanceShift = { [weak self] speaker, percent in
@@ -835,10 +850,10 @@ final class AppState {
                 speaker: speaker, percent: percent,
                 allSegments: self.activeTranscriptSegments,
                 speakers: self.speakers,
-                topics: self.meetingEngine?.topics ?? [],
-                actionItems: self.meetingEngine?.detectedActions ?? [],
+                topics: self.currentTopics,
+                actionItems: self.currentActionItems,
                 agenda: self.meetingAgenda.isEmpty ? nil : self.meetingAgenda,
-                contentType: self.meetingEngine?.contentTypeClassifier.detectedType
+                contentType: self.detectedContentType
             )
         }
 
@@ -1106,8 +1121,8 @@ final class AppState {
         let context = memoryManager.buildContext(
             allSegments: activeTranscriptSegments,
             speakers: speakers,
-            topics: meetingEngine?.topics ?? [],
-            actionItems: meetingEngine?.detectedActions ?? [],
+            topics: currentTopics,
+            actionItems: currentActionItems,
             agenda: meetingAgenda.isEmpty ? nil : meetingAgenda,
             currentTopic: currentTopicName
         )

@@ -136,6 +136,15 @@ private struct MeetingDetailView: View {
                         .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button {
+                        copyMeetingSummary()
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy meeting summary")
                 }
             }
             .padding(.horizontal, 20)
@@ -150,9 +159,15 @@ private struct MeetingDetailView: View {
                     // Summary
                     if !meeting.summary.isEmpty {
                         SectionBlock(title: "Summary", icon: "doc.text.fill", color: .blue) {
-                            Text(meeting.summary)
-                                .font(.system(size: 12))
-                                .lineSpacing(3)
+                            if let md = try? AttributedString(markdown: meeting.summary) {
+                                Text(md)
+                                    .font(.system(size: 12))
+                                    .lineSpacing(3)
+                            } else {
+                                Text(meeting.summary)
+                                    .font(.system(size: 12))
+                                    .lineSpacing(3)
+                            }
                         }
                     }
 
@@ -380,6 +395,29 @@ private struct MeetingDetailView: View {
             parts.append("Transcript (excerpt):\n\(transcript)")
         }
         return parts.joined(separator: "\n\n")
+    }
+
+    private func copyMeetingSummary() {
+        let segments = decompressedSegments
+        let markdown = MeetingExporter.exportMarkdown(
+            title: meeting.title,
+            date: meeting.date,
+            segments: segments,
+            speakers: meeting.participations
+                .compactMap { $0.interlocutor }
+                .map { SpeakerInfo(id: $0.id, name: $0.name) },
+            topics: meeting.topics.sorted { $0.startTime < $1.startTime }
+                .map { TopicInfo(name: $0.name, startTime: $0.startTime, summary: $0.summary) },
+            actionItems: meeting.actionItems.map {
+                SignalDetector.DetectedAction(
+                    description: $0.desc,
+                    ownerLabel: $0.owner?.name ?? "",
+                    extractedFrom: $0.extractedFrom
+                )
+            },
+            summary: meeting.summary.isEmpty ? nil : meeting.summary
+        )
+        MeetingExporter.copyToClipboard(markdown)
     }
 
     private func formatDuration(_ d: TimeInterval) -> String {
