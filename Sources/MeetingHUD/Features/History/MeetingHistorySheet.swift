@@ -322,15 +322,7 @@ private struct MeetingDetailView: View {
                     // Summary
                     if !meeting.summary.isEmpty {
                         SectionBlock(title: "Summary", icon: "doc.text.fill", color: .blue) {
-                            if let md = try? AttributedString(markdown: meeting.summary) {
-                                Text(md)
-                                    .font(.system(size: 12))
-                                    .lineSpacing(3)
-                            } else {
-                                Text(meeting.summary)
-                                    .font(.system(size: 12))
-                                    .lineSpacing(3)
-                            }
+                            MarkdownView(text: meeting.summary)
                         }
                     }
 
@@ -652,19 +644,77 @@ private struct HistoryChatBubble: View {
     var body: some View {
         HStack {
             if message.role == .user { Spacer(minLength: 40) }
-            Text(message.content)
-                .font(.system(size: 12))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(
-                    message.role == .user
-                        ? AnyShapeStyle(.blue.opacity(0.2))
-                        : AnyShapeStyle(.secondary.opacity(0.1)),
-                    in: RoundedRectangle(cornerRadius: 8)
-                )
-                .textSelection(.enabled)
+            Group {
+                if message.role == .assistant {
+                    MarkdownView(text: message.content, fontSize: 12)
+                } else {
+                    Text(message.content)
+                        .font(.system(size: 12))
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                message.role == .user
+                    ? AnyShapeStyle(.blue.opacity(0.2))
+                    : AnyShapeStyle(.secondary.opacity(0.1)),
+                in: RoundedRectangle(cornerRadius: 8)
+            )
+            .textSelection(.enabled)
             if message.role == .assistant { Spacer(minLength: 40) }
         }
+    }
+}
+
+/// Renders markdown text line-by-line, handling headers, bullets, and bold.
+private struct MarkdownView: View {
+    let text: String
+    var fontSize: CGFloat = 12
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                renderLine(line)
+            }
+        }
+    }
+
+    private var lines: [String] {
+        text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+
+    @ViewBuilder
+    private func renderLine(_ line: String) -> some View {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+        if trimmed.hasPrefix("### ") {
+            Text(inlineMarkdown(String(trimmed.dropFirst(4))))
+                .font(.system(size: fontSize, weight: .semibold))
+                .padding(.top, 2)
+        } else if trimmed.hasPrefix("## ") {
+            Text(inlineMarkdown(String(trimmed.dropFirst(3))))
+                .font(.system(size: fontSize + 1, weight: .bold))
+                .padding(.top, 4)
+        } else if trimmed.hasPrefix("# ") {
+            Text(inlineMarkdown(String(trimmed.dropFirst(2))))
+                .font(.system(size: fontSize + 2, weight: .bold))
+                .padding(.top, 6)
+        } else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
+            HStack(alignment: .top, spacing: 4) {
+                Text("•")
+                    .font(.system(size: fontSize))
+                    .foregroundStyle(.secondary)
+                Text(inlineMarkdown(String(trimmed.dropFirst(2))))
+                    .font(.system(size: fontSize))
+            }
+        } else {
+            Text(inlineMarkdown(trimmed))
+                .font(.system(size: fontSize))
+        }
+    }
+
+    private func inlineMarkdown(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text)) ?? AttributedString(text)
     }
 }
 
