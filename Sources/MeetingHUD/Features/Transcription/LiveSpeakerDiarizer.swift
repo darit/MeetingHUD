@@ -99,14 +99,7 @@ actor LiveSpeakerDiarizer {
         defer { isProcessing = false }
         runCount += 1
 
-        // Try stereo diarization first (better speaker separation)
-        let stereoAudio = stereoAudioProvider?() ?? []
-        if stereoAudio.count >= 2 * Int(minAudioDuration) * 16000 {
-            await runStereoDiarization(stereoAudio: stereoAudio, monoAudio: audio, segments: segments, duration: duration)
-            return
-        }
-
-        // Fall back to Pyannote pipeline (mono)
+        // Use Pyannote pipeline (stereo diarizer is too slow for live use)
         await runPyannoteDiarization(audio: audio, segments: segments, duration: duration)
     }
 

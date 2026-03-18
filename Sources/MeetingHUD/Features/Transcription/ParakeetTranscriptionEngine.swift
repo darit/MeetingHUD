@@ -26,7 +26,6 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
     /// Whether language has been auto-detected and locked for this session.
     private var languageLocked = false
 
-
     // MARK: - Parakeet
 
     private var model: ParakeetASRModel?
@@ -58,7 +57,6 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
             downloadProgress = 0
         }
 
-        // Track whether we actually need to download (progress stays at 0% briefly then jumps)
         var sawRealDownload = false
         let loadStart = ContinuousClock.now
 
@@ -66,22 +64,13 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.downloadProgress = progress
-
-                // The library always says "Downloading model..." even when cached.
-                // If we're still in the "download" phase (progress < 0.7), check timing:
-                // a real download takes >1s, a cache hit is instant.
                 if status.contains("Downloading") {
                     let elapsed = ContinuousClock.now - loadStart
                     if elapsed > .seconds(1) && progress < 0.65 {
                         sawRealDownload = true
                     }
-                    if sawRealDownload {
-                        self.loadingStatus = status
-                    } else {
-                        self.loadingStatus = "Loading Parakeet TDT…"
-                    }
+                    self.loadingStatus = sawRealDownload ? status : "Loading Parakeet TDT…"
                 } else {
-                    // "Loading CoreML models...", "Loading decoder...", etc.
                     self.loadingStatus = status
                 }
             }
@@ -103,26 +92,12 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
 
         isTranscribing = true
         accumulatedAudio = []
-        languageLocked = language != nil // if manually set, don't override
+        languageLocked = language != nil
+        chunkCount = 0
 
-        // Parakeet benefits from longer chunks for better punctuation context
         var sampleAccumulator: [Float] = []
-        let chunkSampleCount = Constants.Audio.sampleRate * 5 // 5s chunks
+        let chunkSampleCount = Constants.Audio.sampleRate * 3 // 3s chunks (was 5s — faster turnaround)
         var chunkIndex = 0
-
-        // Process chunks in a background task so audio consumption isn't blocked
-        let chunkQueue = ChunkQueue()
-
-        let processingTask = Task.detached { [weak self] in
-            while !Task.isCancelled {
-                guard let self else { break }
-                if let (chunk, offset) = await chunkQueue.dequeue() {
-                    self.processChunk(chunk, offset: offset)
-                } else {
-                    try? await Task.sleep(for: .milliseconds(50))
-                }
-            }
-        }
 
         for await samples in audioStream {
             guard isTranscribing else { break }
@@ -133,21 +108,17 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
                 let chunk = Array(sampleAccumulator.prefix(chunkSampleCount))
                 sampleAccumulator.removeFirst(chunkSampleCount)
 
-                let chunkOffset = TimeInterval(chunkIndex) * 5.0
-                await chunkQueue.enqueue(chunk, offset: chunkOffset)
+                let chunkOffset = TimeInterval(chunkIndex) * 3.0
+                processChunk(chunk, offset: chunkOffset)
                 chunkIndex += 1
             }
         }
 
         // Process remaining audio
         if !sampleAccumulator.isEmpty && isTranscribing {
-            let chunkOffset = TimeInterval(chunkIndex) * 5.0
-            await chunkQueue.enqueue(sampleAccumulator, offset: chunkOffset)
+            let chunkOffset = TimeInterval(chunkIndex) * 3.0
+            processChunk(sampleAccumulator, offset: chunkOffset)
         }
-
-        // Wait for processing to finish
-        try? await Task.sleep(for: .seconds(2))
-        processingTask.cancel()
 
         isTranscribing = false
     }
@@ -189,22 +160,21 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         guard let model else { return }
         chunkCount += 1
 
-        // Use transcribeWithLanguage to get confidence score
         let result = model.transcribeWithLanguage(audio: samples, sampleRate: 16000, language: language)
 
-        let preview = result.text.prefix(60).trimmingCharacters(in: .whitespacesAndNewlines)
-        print("[ParakeetEngine] Chunk #\(chunkCount): conf=\(String(format: "%.2f", result.confidence)) lang=\(result.language ?? "?") text=\"\(preview)\"")
+        let preview = result.text.prefix(50).trimmingCharacters(in: .whitespacesAndNewlines)
+        print("[ParakeetEngine] Chunk #\(chunkCount): conf=\(String(format: "%.2f", result.confidence)) lang=\(result.language ?? "?") \"\(preview)\"")
 
         // Log auto-detected language on first confident chunk
         if language == nil && !languageLocked {
             if result.confidence > 0.5, let lang = result.language, !lang.isEmpty {
                 let langCode = Self.languageNameToCode[lang.lowercased()] ?? lang
                 languageLocked = true
-                print("[ParakeetEngine] Detected language: \(lang) → \(langCode) (confidence: \(String(format: "%.2f", result.confidence)))")
+                print("[ParakeetEngine] Detected language: \(lang) → \(langCode)")
             }
         }
 
-        // Skip low-confidence chunks (likely noise/filler like "Uh", "The")
+        // Skip low-confidence chunks (noise/silence)
         guard result.confidence > 0.1 else { return }
 
         let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -229,22 +199,4 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         "norwegian": "no", "danish": "da", "finnish": "fi", "greek": "el",
         "czech": "cs", "romanian": "ro", "hungarian": "hu", "catalan": "ca",
     ]
-}
-
-/// Thread-safe FIFO queue for audio chunks waiting to be transcribed.
-private actor ChunkQueue {
-    private var items: [([Float], TimeInterval)] = []
-
-    func enqueue(_ chunk: [Float], offset: TimeInterval) {
-        // Keep max 3 pending — drop oldest if backed up
-        if items.count >= 3 {
-            items.removeFirst()
-        }
-        items.append((chunk, offset))
-    }
-
-    func dequeue() -> ([Float], TimeInterval)? {
-        guard !items.isEmpty else { return nil }
-        return items.removeFirst()
-    }
 }
