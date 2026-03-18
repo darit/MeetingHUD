@@ -131,6 +131,13 @@ final class AppState {
     /// Optional meeting agenda pasted by the user. Fed to LLM for context-aware analysis.
     var meetingAgenda: String = ""
 
+    /// Whether web search is enabled for enriching insights.
+    var webSearchEnabled: Bool = false {
+        didSet {
+            Task { await recommendationAgent.webSearch.setEnabled(webSearchEnabled) }
+        }
+    }
+
     // MARK: - Chat
 
     /// Chat conversation messages (user + assistant, excludes system).
@@ -330,6 +337,7 @@ final class AppState {
 
     func setup() {
         metricsTracker.start()
+        webSearchEnabled = UserDefaults.standard.bool(forKey: "webSearchEnabled")
 
         // Sync settings from UserDefaults (written by SettingsView @AppStorage)
         autoDetectEnabled = UserDefaults.standard.object(forKey: "autoDetectMeetings") as? Bool ?? true

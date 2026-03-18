@@ -27,6 +27,7 @@ final class RecommendationAgent {
     var llmProvider: any LLMProvider
     private let memoryManager: MemoryManager
     private let analysisQueue: AnalysisQueue
+    let webSearch = WebSearchManager()
 
     /// Active generation task (for cancellation).
     private var generationTask: Task<Void, Never>?
@@ -172,18 +173,31 @@ final class RecommendationAgent {
             contentType: contentType
         )
 
-        // Use the new proactive analysis prompt for richer categorized insights
-        let messages = [
-            ChatMessage(role: .system, content: PromptTemplates.proactiveAnalysis),
-            ChatMessage(role: .user, content: """
-                Trigger: \(trigger)
-
-                \(context)
-                """),
-        ]
-
+        let capturedTopic = currentTopic
         let llm = llmProvider
+        let search = webSearch
+
         generationTask = Task {
+            // Search for web context about the current topic
+            var webContext = ""
+            if let topic = capturedTopic {
+                if let result = await search.search(query: topic) {
+                    let formatted = await search.formatForPrompt(result)
+                    webContext = "\n\nWeb context for \"\(topic)\":\n\(formatted)"
+                    await MainActor.run { [weak self] in
+                        self?.log("Web search hit for: \(topic)")
+                    }
+                }
+            }
+
+            let messages = [
+                ChatMessage(role: .system, content: PromptTemplates.proactiveAnalysis),
+                ChatMessage(role: .user, content: """
+                    Trigger: \(trigger)
+
+                    \(context)\(webContext)
+                    """),
+            ]
             defer { isGenerating = false }
 
             await analysisQueue.enqueue { [weak self] in

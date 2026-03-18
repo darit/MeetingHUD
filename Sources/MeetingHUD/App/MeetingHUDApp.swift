@@ -164,6 +164,8 @@ struct MenuBarView: View {
                 set: { appState.audioCaptureManager.isNoiseCancellationEnabled = $0 }
             ))
 
+            Toggle("Web Search (DuckDuckGo)", isOn: $appState.webSearchEnabled)
+
             Toggle("Auto-Detect Meetings", isOn: $appState.autoDetectEnabled)
 
             Divider()
