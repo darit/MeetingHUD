@@ -47,12 +47,18 @@ final class AudioCaptureManager: @unchecked Sendable {
     var isCapturing = false
     var capturedProcesses: [pid_t] = []
     var audioLevel: Float = 0.0
+    var micLevel: Float = 0.0
     var captureMode: CaptureMode = .microphone
+    /// When true, mic audio is not mixed into the stream (system audio continues).
+    var isMicMuted = false
+    /// Whether mic is active alongside system audio.
+    var hasMicCapture = false
 
     enum CaptureMode: String {
         case processTap = "System Audio (Process Tap)"
         case screenCapture = "System Audio (ScreenCaptureKit)"
         case microphone = "Microphone"
+        case systemPlusMic = "System + Mic"
     }
 
     // MARK: - Audio Format
@@ -83,9 +89,11 @@ final class AudioCaptureManager: @unchecked Sendable {
     private var tapObjectID: AudioObjectID = kAudioObjectUnknown
     private var aggregateDeviceID: AudioDeviceID = kAudioObjectUnknown
     private var audioEngine: AVAudioEngine?
+    private var micEngine: AVAudioEngine?
     private var scStream: SCStream?
     private var scStreamDelegate: SCStreamAudioHandler?
     private var scErrorDelegate: SCStreamErrorDelegate?
+    private let _micLevelStorage = UnsafeMutablePointer<Float>.allocate(capacity: 1)
 
     // MARK: - Capture Control
 
@@ -101,6 +109,7 @@ final class AudioCaptureManager: @unchecked Sendable {
             capturedProcesses = pids
             isCapturing = true
             startLevelMetering()
+            startMicAlongside()
             print("[AudioCapture] Started via process tap")
             return
         }
@@ -111,6 +120,7 @@ final class AudioCaptureManager: @unchecked Sendable {
             capturedProcesses = []
             isCapturing = true
             startLevelMetering()
+            startMicAlongside()
             print("[AudioCapture] Started via ScreenCaptureKit")
             return
         }
@@ -137,6 +147,11 @@ final class AudioCaptureManager: @unchecked Sendable {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine = nil
 
+        micEngine?.stop()
+        micEngine?.inputNode.removeTap(onBus: 0)
+        micEngine = nil
+        hasMicCapture = false
+
         // Stop ScreenCaptureKit stream
         if let stream = scStream {
             Task { try? await stream.stopCapture() }
@@ -150,7 +165,9 @@ final class AudioCaptureManager: @unchecked Sendable {
         streamContinuation = nil
         capturedProcesses = []
         audioLevel = 0.0
+        micLevel = 0.0
         _audioLevelStorage.pointee = 0
+        _micLevelStorage.pointee = 0
     }
 
     // MARK: - Process Tap (System Audio)
@@ -335,6 +352,82 @@ final class AudioCaptureManager: @unchecked Sendable {
         self.audioEngine = engine
     }
 
+    // MARK: - Mic Alongside System Audio
+
+    /// Start mic capture alongside system audio. Mic samples are mixed into the same
+    /// stream but can be muted independently via `isMicMuted`.
+    private func startMicAlongside() {
+        // Check mic permission
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
+            print("[AudioCapture] Mic permission not granted, skipping mic capture")
+            return
+        }
+
+        let engine = AVAudioEngine()
+        let continuation = self.streamContinuation
+        let levelPtr = self._micLevelStorage
+        let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+        let converter = AVAudioConverter(from: inputFormat, to: processingFormat)
+
+        engine.inputNode.installTap(
+            onBus: 0,
+            bufferSize: 4096,
+            format: inputFormat
+        ) { [weak self] buffer, _ in
+            guard let self, !self.isMicMuted else { return }
+
+            guard let converter else {
+                guard let channelData = buffer.floatChannelData else { return }
+                let frameCount = Int(buffer.frameLength)
+                let samples = Array(UnsafeBufferPointer(start: channelData[0], count: frameCount))
+                continuation?.yield(samples)
+                return
+            }
+
+            let ratio = 16000.0 / inputFormat.sampleRate
+            let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
+            guard let outputBuffer = AVAudioPCMBuffer(
+                pcmFormat: converter.outputFormat,
+                frameCapacity: outputFrameCount
+            ) else { return }
+
+            var error: NSError?
+            var consumed = false
+            converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+                if consumed {
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
+                consumed = true
+                outStatus.pointee = .haveData
+                return buffer
+            }
+
+            guard error == nil,
+                  let channelData = outputBuffer.floatChannelData else { return }
+            let frameCount = Int(outputBuffer.frameLength)
+            guard frameCount > 0 else { return }
+            let samples = Array(UnsafeBufferPointer(start: channelData[0], count: frameCount))
+
+            var sumOfSquares: Float = 0
+            for sample in samples { sumOfSquares += sample * sample }
+            levelPtr.pointee = sqrtf(sumOfSquares / Float(frameCount))
+
+            continuation?.yield(samples)
+        }
+
+        do {
+            try engine.start()
+            self.micEngine = engine
+            self.hasMicCapture = true
+            let modeLabel = captureMode == .processTap ? "Process Tap" : "ScreenCaptureKit"
+            captureMode = .systemPlusMic
+            print("[AudioCapture] Mic capture started alongside \(modeLabel)")
+        } catch {
+            print("[AudioCapture] Mic alongside failed: \(error), continuing with system audio only")
+        }
+    }
+
     // MARK: - Shared
 
     /// Install a tap on the engine's input node to capture audio samples.
@@ -421,11 +514,13 @@ final class AudioCaptureManager: @unchecked Sendable {
 
     private func startLevelMetering() {
         nonisolated(unsafe) let levelPtr = _audioLevelStorage
+        nonisolated(unsafe) let micLevelPtr = _micLevelStorage
         levelTimer = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard !Task.isCancelled else { break }
                 self?.audioLevel = levelPtr.pointee
+                self?.micLevel = micLevelPtr.pointee
             }
         }
     }

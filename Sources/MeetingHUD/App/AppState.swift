@@ -553,10 +553,10 @@ final class AppState {
         recordingError = nil
     }
 
-    /// Toggle mic mute — when muted, audio is not transcribed or accumulated.
+    /// Toggle mic mute — when muted, mic audio is silenced but system audio continues.
     func toggleMute() {
         isMicMuted.toggle()
-        activeTranscriptionEngine.isMuted = isMicMuted
+        audioCaptureManager.isMicMuted = isMicMuted
         addDebug(isMicMuted ? "Mic muted" : "Mic unmuted")
     }
 

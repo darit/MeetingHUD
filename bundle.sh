@@ -19,15 +19,36 @@ else
     echo "⚠ No Apple Development cert found, using ad-hoc signing (permissions will reset on rebuild)"
 fi
 
-echo "Building..."
+# Ensure Xcode is the active developer directory
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-xcodebuild \
-    -scheme MeetingHUD \
-    -configuration Debug \
-    -destination "platform=macOS" \
-    -derivedDataPath "$BUILD_DIR" \
-    -workspace "$SCRIPT_DIR/.swiftpm/xcode/package.xcworkspace" \
-    build 2>&1 | tail -3
+
+# Generate the SPM workspace if it doesn't exist (fresh clone)
+WORKSPACE="$SCRIPT_DIR/.swiftpm/xcode/package.xcworkspace"
+if [ ! -d "$WORKSPACE" ]; then
+    echo "Generating SPM workspace (first build)..."
+    swift package generate-xcodeproj 2>/dev/null || true
+    # Opening Package.swift in Xcode creates the workspace, but we can also
+    # use xcodebuild directly with the package directory
+fi
+
+echo "Building..."
+if [ -d "$WORKSPACE" ]; then
+    xcodebuild \
+        -scheme MeetingHUD \
+        -configuration Debug \
+        -destination "platform=macOS" \
+        -derivedDataPath "$BUILD_DIR" \
+        -workspace "$WORKSPACE" \
+        build 2>&1 | tail -3
+else
+    # Fallback: build using the package directory directly
+    xcodebuild \
+        -scheme MeetingHUD \
+        -configuration Debug \
+        -destination "platform=macOS" \
+        -derivedDataPath "$BUILD_DIR" \
+        build 2>&1 | tail -3
+fi
 
 if [ ! -f "$BINARY" ]; then
     echo "Build failed — binary not found."
@@ -55,10 +76,10 @@ codesign --force --deep --sign "$SIGN_IDENTITY" \
     --entitlements "$SCRIPT_DIR/Resources/MeetingHUD.entitlements" \
     "$APP_BUNDLE" 2>/dev/null
 
-# Verify and launch
+# Verify and launch (detached from terminal)
 if codesign -d --entitlements - "$APP_BUNDLE" 2>/dev/null | grep -q "audio.capture"; then
     echo "✓ Signed and launching MeetingHUD.app"
-    open "$APP_BUNDLE"
+    open -a "$APP_BUNDLE"
 else
     echo "✗ Signing failed"
     exit 1
