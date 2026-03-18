@@ -371,7 +371,20 @@ final class AudioCaptureManager: @unchecked Sendable {
         // we don't double-capture system audio.
         do {
             try engine.inputNode.setVoiceProcessingEnabled(true)
-            print("[AudioCapture] Voice processing (AEC) enabled on mic")
+            // Disable "ducking" — voice processing auto-lowers system audio volume,
+            // which causes Chrome/YouTube/etc. to get quieter when recording starts.
+            if let audioUnit = engine.inputNode.audioUnit {
+                var duckingEnabled: UInt32 = 0 // 0 = disabled
+                AudioUnitSetProperty(
+                    audioUnit,
+                    kAUVoiceIOProperty_OtherAudioDuckingConfiguration,
+                    kAudioUnitScope_Global,
+                    0,
+                    &duckingEnabled,
+                    UInt32(MemoryLayout<UInt32>.size)
+                )
+            }
+            print("[AudioCapture] Voice processing (AEC) enabled on mic, ducking disabled")
         } catch {
             print("[AudioCapture] Voice processing unavailable: \(error)")
         }
