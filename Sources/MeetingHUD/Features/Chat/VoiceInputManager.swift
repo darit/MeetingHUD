@@ -14,7 +14,7 @@ final class VoiceInputManager {
 
     // MARK: - Dependencies
 
-    private let transcriptionEngine: TranscriptionEngine
+    private let transcriptionProvider: any TranscriptionProvider
 
     // MARK: - Audio
 
@@ -25,8 +25,8 @@ final class VoiceInputManager {
     /// Maximum recording duration in seconds to prevent unbounded memory growth.
     private let maxRecordingDuration = 60
 
-    init(transcriptionEngine: TranscriptionEngine) {
-        self.transcriptionEngine = transcriptionEngine
+    init(transcriptionProvider: any TranscriptionProvider) {
+        self.transcriptionProvider = transcriptionProvider
     }
 
     // MARK: - Recording
@@ -119,7 +119,7 @@ final class VoiceInputManager {
         defer { isTranscribing = false }
 
         do {
-            let text = try await transcriptionEngine.transcribeAudio(samples)
+            let text = try await transcriptionProvider.transcribeAudio(samples)
             return text.isEmpty ? nil : text
         } catch {
             print("[VoiceInputManager] Transcription failed: \(error)")

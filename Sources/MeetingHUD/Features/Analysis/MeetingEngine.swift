@@ -258,7 +258,7 @@ final class MeetingEngine {
     private func runAnalysisPass() async {
         let isAvailable = await llmProvider.isAvailable
         guard isAvailable else { return }
-        guard let segments = segmentsProvider?() else { return }
+        guard let segments = segmentsProvider?(), !segments.isEmpty else { return }
 
         // Sentiment analysis on new segments
         if sentimentWatermark < segments.count {

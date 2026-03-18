@@ -1,8 +1,8 @@
 import Foundation
-import SpeakerKit
+import SpeechVAD
 
-/// Runs speaker diarization on accumulated audio every 20s.
-/// Uses SpeakerKit's Pyannote-based spectral segmentation + clustering,
+/// Runs speaker diarization on accumulated audio every 2s.
+/// Uses PyannoteDiarizationPipeline for spectral segmentation + clustering,
 /// which detects speaker changes from audio characteristics — works well
 /// even when all audio comes through the same system capture channel.
 actor LiveSpeakerDiarizer {
@@ -13,7 +13,7 @@ actor LiveSpeakerDiarizer {
     /// Minimum audio before first run (seconds).
     private let minAudioDuration: TimeInterval = 8.0
 
-    private var speakerKit: SpeakerKit?
+    private var pipeline: PyannoteDiarizationPipeline?
     private var isRunning = false
     private var timerTask: Task<Void, Never>?
     private var runCount = 0
@@ -65,7 +65,7 @@ actor LiveSpeakerDiarizer {
         isRunning = false
         timerTask?.cancel()
         timerTask = nil
-        speakerKit = nil
+        pipeline = nil
         stableLabels = []
     }
 
@@ -89,26 +89,24 @@ actor LiveSpeakerDiarizer {
         runCount += 1
 
         do {
-            if speakerKit == nil {
-                log("Loading SpeakerKit models...")
-                speakerKit = try await SpeakerKit(PyannoteConfig())
-                log("SpeakerKit models loaded")
+            if pipeline == nil {
+                log("Loading diarization pipeline...")
+                pipeline = try await PyannoteDiarizationPipeline.fromPretrained(
+                    embeddingEngine: .coreml
+                )
+                log("Diarization pipeline loaded")
             }
-            guard let speakerKit else { return }
-
-            // Use default SpeakerKit options — custom thresholds were causing
-            // under-segmentation (1 segment for 80s of audio)
-            let options = PyannoteDiarizationOptions()
+            guard let pipeline else { return }
 
             let startTime = Date()
-            let result = try await speakerKit.diarize(audioArray: audio, options: options)
+            let result = pipeline.diarize(audio: audio, sampleRate: 16000, config: .default)
             let elapsed = Date().timeIntervalSince(startTime)
 
             // Collect unique speaker IDs in order of first appearance
             var seenIDs: [Int] = []
             for diarSeg in result.segments {
-                if case .speakerId(let id) = diarSeg.speaker, !seenIDs.contains(id) {
-                    seenIDs.append(id)
+                if !seenIDs.contains(diarSeg.speakerId) {
+                    seenIDs.append(diarSeg.speakerId)
                 }
             }
 
@@ -144,10 +142,7 @@ actor LiveSpeakerDiarizer {
 
             // Log distribution
             for (id, label) in idToLabel.sorted(by: { $0.key < $1.key }) {
-                let count = result.segments.filter {
-                    if case .speakerId(let sid) = $0.speaker { return sid == id }
-                    return false
-                }.count
+                let count = result.segments.filter { $0.speakerId == id }.count
                 log("  \(label): \(count) diar segs")
             }
 
@@ -167,9 +162,7 @@ actor LiveSpeakerDiarizer {
                     let overlap = max(0, oEnd - oStart)
                     if overlap > bestOverlap {
                         bestOverlap = overlap
-                        if case .speakerId(let id) = diarSeg.speaker {
-                            bestLabel = idToLabel[id]
-                        }
+                        bestLabel = idToLabel[diarSeg.speakerId]
                     }
                 }
 

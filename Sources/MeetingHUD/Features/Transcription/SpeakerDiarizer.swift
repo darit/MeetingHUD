@@ -1,7 +1,7 @@
 import Foundation
-import SpeakerKit
+import SpeechVAD
 
-/// Post-meeting speaker diarization using SpeakerKit.
+/// Post-meeting speaker diarization using PyannoteDiarizationPipeline.
 /// Aligns diarization results to existing TranscriptSegments by temporal overlap.
 final class SpeakerDiarizer: Sendable {
 
@@ -13,34 +13,43 @@ final class SpeakerDiarizer: Sendable {
         let speakerCount: Int
         /// Ordered speaker labels (e.g. ["Speaker A", "Speaker B"]).
         let speakerLabels: [String]
+        /// 256-dim speaker embedding centroids per speaker label.
+        let speakerEmbeddings: [String: [Float]]
     }
 
-    /// Run SpeakerKit diarization on the full meeting audio, then align results
+    /// Run diarization on the full meeting audio, then align results
     /// to the existing transcript segments.
     func diarize(
         audio: [Float],
         segments: [TranscriptSegment]
     ) async throws -> DiarizationOutput {
-        let config = PyannoteConfig()
-        let speakerKit = try await SpeakerKit(config)
+        let pipeline = try await PyannoteDiarizationPipeline.fromPretrained(
+            embeddingEngine: .coreml
+        )
 
-        let result = try await speakerKit.diarize(audioArray: audio)
+        let result = pipeline.diarize(audio: audio, sampleRate: 16000, config: .default)
 
         // Build label mapping: numeric speaker ID → "Speaker A/B/C..."
         var speakerIDToLabel: [Int: String] = [:]
         var nextIndex = 0
         for diarSegment in result.segments {
-            if case .speakerId(let id) = diarSegment.speaker {
-                if speakerIDToLabel[id] == nil {
-                    speakerIDToLabel[id] = Constants.speakerLabel(index: nextIndex)
-                    nextIndex += 1
-                }
+            if speakerIDToLabel[diarSegment.speakerId] == nil {
+                speakerIDToLabel[diarSegment.speakerId] = Constants.speakerLabel(index: nextIndex)
+                nextIndex += 1
             }
         }
 
         let orderedLabels = speakerIDToLabel
             .sorted { $0.key < $1.key }
             .map(\.value)
+
+        // Map speaker embeddings to labels
+        var labeledEmbeddings: [String: [Float]] = [:]
+        for (id, label) in speakerIDToLabel {
+            if id < result.speakerEmbeddings.count {
+                labeledEmbeddings[label] = result.speakerEmbeddings[id]
+            }
+        }
 
         // Align diarization segments to transcript segments by maximum overlap
         var updatedSegments = segments
@@ -58,9 +67,7 @@ final class SpeakerDiarizer: Sendable {
 
                 if overlap > bestOverlap {
                     bestOverlap = overlap
-                    if case .speakerId(let id) = diarSegment.speaker {
-                        bestLabel = speakerIDToLabel[id]
-                    }
+                    bestLabel = speakerIDToLabel[diarSegment.speakerId]
                 }
             }
 
@@ -72,7 +79,8 @@ final class SpeakerDiarizer: Sendable {
         return DiarizationOutput(
             segments: updatedSegments,
             speakerCount: speakerIDToLabel.count,
-            speakerLabels: orderedLabels
+            speakerLabels: orderedLabels,
+            speakerEmbeddings: labeledEmbeddings
         )
     }
 }

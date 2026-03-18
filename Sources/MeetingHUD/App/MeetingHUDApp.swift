@@ -168,15 +168,31 @@ struct MenuBarView: View {
                 }
             }
 
-            Menu("Whisper: \(appState.transcriptionEngine.modelName)") {
-                ForEach(["base", "small", "large-v3-turbo"], id: \.self) { model in
+            Menu("ASR: \(appState.selectedTranscriptionBackend.rawValue)") {
+                ForEach(AppState.TranscriptionBackend.allCases, id: \.self) { backend in
                     Button {
-                        appState.switchWhisperModel(to: model)
+                        appState.switchTranscriptionBackend(to: backend)
                     } label: {
                         HStack {
-                            Text(model)
-                            if model == appState.transcriptionEngine.modelName {
+                            Text(backend.rawValue)
+                            if backend == appState.selectedTranscriptionBackend {
                                 Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+
+                if appState.selectedTranscriptionBackend == .whisperKit {
+                    Divider()
+                    ForEach(["base", "small", "large-v3-turbo"], id: \.self) { model in
+                        Button {
+                            appState.switchWhisperModel(to: model)
+                        } label: {
+                            HStack {
+                                Text(model)
+                                if model == appState.transcriptionEngine.modelName {
+                                    Image(systemName: "checkmark")
+                                }
                             }
                         }
                     }

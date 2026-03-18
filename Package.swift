@@ -19,12 +19,12 @@ let package = Package(
             name: "MeetingHUD",
             dependencies: [
                 "WhisperKit",
-                .product(name: "SpeakerKit", package: "WhisperKit"),
                 "KeyboardShortcuts",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "SpeechVAD", package: "speech-swift"),
+                .product(name: "ParakeetASR", package: "speech-swift"),
             ],
             path: "Sources/MeetingHUD",
             swiftSettings: [

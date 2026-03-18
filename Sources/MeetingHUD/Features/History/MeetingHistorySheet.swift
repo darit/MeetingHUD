@@ -355,7 +355,13 @@ private struct MeetingDetailView: View {
         }
         if !meeting.actionItems.isEmpty {
             let actionLines = meeting.actionItems.map { item -> String in
-                let owner = item.owner?.name.map { " [\($0)]" } ?? ""
+                let ownerSuffix: String
+                if let ownerName = item.owner?.name {
+                    ownerSuffix = " [\(ownerName)]"
+                } else {
+                    ownerSuffix = ""
+                }
+                let owner = ownerSuffix
                 return "- \(item.desc)\(owner)"
             }
             parts.append("Action items:\n\(actionLines.joined(separator: "\n"))")

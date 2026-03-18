@@ -8,7 +8,7 @@ import WhisperKit
 /// then runs WhisperKit transcription on each chunk. Includes basic speaker turn
 /// detection via silence gaps between segments.
 @Observable
-final class TranscriptionEngine: @unchecked Sendable {
+final class TranscriptionEngine: @unchecked Sendable, TranscriptionProvider {
     // MARK: - State
 
     var isModelLoaded = false

@@ -80,8 +80,8 @@ struct OverlayView: View {
                     TranscriptColumn(
                         segments: appState.activeTranscriptSegments,
                         isModelLoading: appState.isModelLoading,
-                        loadingStatus: appState.transcriptionEngine.loadingStatus,
-                        downloadProgress: appState.transcriptionEngine.downloadProgress,
+                        loadingStatus: appState.activeTranscriptionEngine.loadingStatus,
+                        downloadProgress: appState.activeTranscriptionEngine.downloadProgress,
                         recordingError: appState.recordingError,
                         onRenameSpeaker: { old, new in appState.renameSpeaker(from: old, to: new) }
                     )
@@ -397,7 +397,7 @@ private struct OverlayToolbar: View {
             Button {
                 appState.cycleLanguage()
             } label: {
-                Text(appState.transcriptionEngine.language?.uppercased() ?? "AUTO")
+                Text(appState.activeTranscriptionEngine.language?.uppercased() ?? "AUTO")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 5)
@@ -1111,15 +1111,7 @@ private struct InsightsColumn: View {
                         SectionCard(icon: "list.bullet", color: .teal) {
                             VStack(alignment: .leading, spacing: 3) {
                                 ForEach(Array(topics.suffix(5).enumerated()), id: \.offset) { _, topic in
-                                    HStack(spacing: 4) {
-                                        Circle()
-                                            .fill(topic.name == currentTopic ? .teal : .secondary.opacity(0.3))
-                                            .frame(width: 5, height: 5)
-                                        Text(topic.name)
-                                            .font(.system(size: 10, weight: topic.name == currentTopic ? .semibold : .regular))
-                                            .foregroundStyle(topic.name == currentTopic ? .primary : .secondary)
-                                            .lineLimit(1)
-                                    }
+                                    TopicRow(topic: topic, isCurrent: topic.name == currentTopic)
                                 }
                             }
                         }
@@ -1175,6 +1167,50 @@ private struct InsightsColumn: View {
     }
 }
 
+/// A topic row that expands inline to show its summary on tap.
+private struct TopicRow: View {
+    let topic: TopicInfo
+    let isCurrent: Bool
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(isCurrent ? .teal : .secondary.opacity(0.3))
+                    .frame(width: 5, height: 5)
+                Text(topic.name)
+                    .font(.system(size: 10, weight: isCurrent ? .semibold : .regular))
+                    .foregroundStyle(isCurrent ? .primary : .secondary)
+                    .lineLimit(1)
+                Spacer()
+                if !topic.summary.isEmpty {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 7, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard !topic.summary.isEmpty else { return }
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    isExpanded.toggle()
+                }
+            }
+
+            if isExpanded {
+                Text(topic.summary)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .padding(.leading, 9)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+}
+
 /// Compact section card for the insights column.
 private struct SectionCard<Content: View>: View {
     let icon: String
@@ -1199,6 +1235,7 @@ private struct RecommendationCard: View {
     let recommendation: Recommendation
     var onDismiss: (() -> Void)?
     @State private var opacity: Double = 1.0
+    @State private var isExpanded = false
 
     /// Seconds before auto-dismiss.
     private let autoDismissDelay: TimeInterval = 30
@@ -1223,7 +1260,13 @@ private struct RecommendationCard: View {
             }
             Text(recommendation.text)
                 .font(Theme.Typography.body)
-                .lineLimit(3)
+                .lineLimit(isExpanded ? nil : 3)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isExpanded.toggle()
+                    }
+                }
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))

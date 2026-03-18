@@ -139,6 +139,9 @@ final class RecommendationAgent {
         currentTopic: String?,
         contentType: ContentTypeClassifier.ContentType? = nil
     ) {
+        // Don't generate insights when there's no meaningful transcript content
+        guard allSegments.count >= 5 else { return }
+
         isGenerating = true
         lastGenerationTime = .now
 

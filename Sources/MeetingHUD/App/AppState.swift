@@ -189,9 +189,11 @@ final class AppState {
             addDebug("Cannot switch Whisper model while recording")
             return
         }
+        selectedTranscriptionBackend = .whisperKit
         transcriptionEngine.modelName = model
         transcriptionEngine.isModelLoaded = false
         UserDefaults.standard.set(model, forKey: "whisperModel")
+        UserDefaults.standard.set(TranscriptionBackend.whisperKit.rawValue, forKey: "transcriptionBackend")
         addDebug("Whisper model set to \(model) — will load on next recording")
     }
 
@@ -222,10 +224,38 @@ final class AppState {
     /// Analytics collected at meeting end, passed to persistence.
     private var pendingAnalytics: AnalyticsSnapshot?
 
+    // MARK: - Transcription Backend
+
+    enum TranscriptionBackend: String, CaseIterable {
+        case parakeet = "Parakeet TDT"
+        case whisperKit = "WhisperKit"
+    }
+
+    var selectedTranscriptionBackend: TranscriptionBackend = .parakeet
+
+    /// The active transcription engine based on selected backend.
+    var activeTranscriptionEngine: any TranscriptionProvider {
+        switch selectedTranscriptionBackend {
+        case .parakeet: return parakeetEngine
+        case .whisperKit: return transcriptionEngine
+        }
+    }
+
+    func switchTranscriptionBackend(to backend: TranscriptionBackend) {
+        guard !isRecording else {
+            addDebug("Cannot switch ASR backend while recording")
+            return
+        }
+        selectedTranscriptionBackend = backend
+        UserDefaults.standard.set(backend.rawValue, forKey: "transcriptionBackend")
+        addDebug("ASR backend set to \(backend.rawValue)")
+    }
+
     // MARK: - Subsystems
 
     let audioCaptureManager = AudioCaptureManager()
     let transcriptionEngine = TranscriptionEngine()
+    let parakeetEngine = ParakeetTranscriptionEngine()
     private let meetingAppDetector = MeetingAppDetector()
     private let meetingAutoDetector = MeetingAutoDetector()
     private let speakerDiarizer = SpeakerDiarizer()
@@ -242,7 +272,12 @@ final class AppState {
     private var modelContainer: ModelContainer?
 
     init() {
-        voiceInputManager = VoiceInputManager(transcriptionEngine: transcriptionEngine)
+        // Restore saved backend
+        if let saved = UserDefaults.standard.string(forKey: "transcriptionBackend"),
+           let backend = TranscriptionBackend(rawValue: saved) {
+            selectedTranscriptionBackend = backend
+        }
+        voiceInputManager = VoiceInputManager(transcriptionProvider: activeTranscriptionEngine)
         memoryManager = MemoryManager(llmProvider: mlxProvider, analysisQueue: sharedAnalysisQueue)
         recommendationAgent = RecommendationAgent(
             llmProvider: mlxProvider,
@@ -276,7 +311,9 @@ final class AppState {
             ?? UserDefaults.standard.string(forKey: "transcriptionModel")
             ?? "large-v3-turbo"
         let langSetting = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
-        transcriptionEngine.language = langSetting == "auto" ? nil : langSetting
+        let langValue = langSetting == "auto" ? nil : langSetting
+        transcriptionEngine.language = langValue
+        parakeetEngine.language = langValue
 
         // Restore saved analysis provider choice
         if let savedProvider = UserDefaults.standard.string(forKey: "analysisProvider"),
@@ -444,7 +481,7 @@ final class AppState {
         Task {
             await liveSpeakerDiarizer.configure(
                 audioProvider: { [weak self] in
-                    self?.transcriptionEngine.accumulatedAudio ?? []
+                    self?.activeTranscriptionEngine.accumulatedAudio ?? []
                 },
                 segmentsProvider: { [weak self] in
                     self?.activeTranscriptSegments ?? []
@@ -452,14 +489,19 @@ final class AppState {
                 onDiarizationComplete: { [weak self] updatedSegments in
                     guard let self else { return }
 
-                    // Auto-ID disabled for system audio — profiles aren't reliable
-                    // across sessions through the same channel. User names manually.
-
                     // Apply rename map to diarized segments
                     var segments = updatedSegments
                     for i in segments.indices {
                         segments[i].speakerLabel = self.displayName(for: segments[i].speakerLabel)
                     }
+
+                    // Merge: the diarizer worked on a snapshot taken at start of its run.
+                    // New segments may have arrived since then — append any that aren't
+                    // in the diarized set so we never lose data.
+                    let diarizedIDs = Set(segments.map(\.id))
+                    let newSegments = self.activeTranscriptSegments.filter { !diarizedIDs.contains($0.id) }
+                    segments.append(contentsOf: newSegments)
+
                     self.activeTranscriptSegments = segments
                     self.rebuildSpeakers(from: segments)
 
@@ -470,7 +512,7 @@ final class AppState {
                         labelCounts[seg.speakerLabel, default: 0] += 1
                     }
                     if let dominant = labelCounts.max(by: { $0.value < $1.value }) {
-                        self.transcriptionEngine.defaultSpeakerName = dominant.key
+                        self.activeTranscriptionEngine.defaultSpeakerName = dominant.key
                     }
                 },
                 onDebugLog: { [weak self] msg in
@@ -488,7 +530,7 @@ final class AppState {
     /// Cycle transcription language: auto → en → es → auto.
     /// Takes effect on the next transcription chunk (no restart needed).
     func cycleLanguage() {
-        let current = transcriptionEngine.language
+        let current = activeTranscriptionEngine.language
         let next: String?
         switch current {
         case nil:    next = "en"    // auto → English
@@ -496,7 +538,7 @@ final class AppState {
         case "es":   next = nil     // Spanish → auto
         default:     next = nil     // anything else → auto
         }
-        transcriptionEngine.language = next
+        activeTranscriptionEngine.language = next
         UserDefaults.standard.set(next ?? "auto", forKey: "transcriptionLanguage")
     }
 
@@ -547,7 +589,7 @@ final class AppState {
     private func autoIdentifySpeakers(diarizedSegments: [TranscriptSegment]) async {
         guard let mc = modelContainer else { return }
 
-        let audio = transcriptionEngine.accumulatedAudio
+        let audio = activeTranscriptionEngine.accumulatedAudio
         guard !audio.isEmpty else { return }
 
         // Load known profiles
@@ -609,7 +651,7 @@ final class AppState {
 
     /// Extract a voice embedding for a speaker and persist it to their Interlocutor profile.
     private func saveVoiceProfile(speakerLabel: String, displayName: String) async {
-        let audio = transcriptionEngine.accumulatedAudio
+        let audio = activeTranscriptionEngine.accumulatedAudio
         guard !audio.isEmpty else { return }
 
         // Find the longest segment for this speaker (use all aliases)
@@ -650,7 +692,11 @@ final class AppState {
         captureState = .off
 
         // Stop pipeline
-        transcriptionEngine.stopTranscribing()
+        if let whisper = activeTranscriptionEngine as? TranscriptionEngine {
+            whisper.stopTranscribing()
+        } else if let parakeet = activeTranscriptionEngine as? ParakeetTranscriptionEngine {
+            parakeet.stopTranscribing()
+        }
         audioCaptureManager.stopCapture()
 
         transcriptionTask?.cancel()
@@ -827,7 +873,7 @@ final class AppState {
     private func runPostMeetingProcessing() async {
         guard let meeting = currentMeeting else { return }
 
-        let audio = transcriptionEngine.accumulatedAudio
+        let audio = activeTranscriptionEngine.accumulatedAudio
         let segments = activeTranscriptSegments
 
         guard !segments.isEmpty else { return }
@@ -877,7 +923,7 @@ final class AppState {
             showSpeakerNamingSheet = true
         }
 
-        transcriptionEngine.clearAccumulatedAudio()
+        activeTranscriptionEngine.clearAccumulatedAudio()
     }
 
     /// Extract a representative voice embedding per speaker from accumulated audio.
@@ -1183,13 +1229,16 @@ final class AppState {
     private func runTranscriptionPipeline() async {
         recordingError = nil
 
-        // Load WhisperKit model if needed (may download on first run)
-        if !transcriptionEngine.isModelLoaded {
+        let engine = activeTranscriptionEngine
+        let backendName = selectedTranscriptionBackend.rawValue
+
+        // Load ASR model if needed (may download on first run)
+        if !engine.isModelLoaded {
             isModelLoading = true
-            addDebug("Loading Whisper model: \(transcriptionEngine.modelName)")
+            addDebug("Loading \(backendName) model...")
             do {
-                try await transcriptionEngine.loadModel()
-                addDebug("Whisper model loaded")
+                try await engine.loadModel()
+                addDebug("\(backendName) model loaded")
             } catch {
                 print("[AppState] Model loading failed: \(error)")
                 isModelLoading = false
@@ -1200,11 +1249,22 @@ final class AppState {
             isModelLoading = false
         }
 
-        addDebug("Language: \(transcriptionEngine.language ?? "auto-detect")")
+        addDebug("Language: \(engine.language ?? "auto-detect")")
 
         // Set up streams BEFORE starting capture to avoid losing early buffers
         let audioStream = audioCaptureManager.audioStream
-        let segmentStream = transcriptionEngine.transcriptStream
+
+        // Get the segment stream from the active engine
+        let segmentStream: AsyncStream<TranscriptSegment>
+        if let whisper = engine as? TranscriptionEngine {
+            segmentStream = whisper.transcriptStream
+        } else if let parakeet = engine as? ParakeetTranscriptionEngine {
+            segmentStream = parakeet.transcriptStream
+        } else {
+            recordingError = "Unknown transcription backend"
+            captureState = .off
+            return
+        }
 
         // Start audio capture — tries process tap → ScreenCaptureKit → microphone
         do {
@@ -1220,16 +1280,21 @@ final class AppState {
         // Set default speaker name based on capture mode
         let userName = UserDefaults.standard.string(forKey: "userName") ?? "Danny"
         if audioCaptureManager.captureMode == .microphone {
-            transcriptionEngine.defaultSpeakerName = userName
+            engine.defaultSpeakerName = userName
             addDebug("Mic mode: default speaker = \(userName)")
         } else {
-            transcriptionEngine.defaultSpeakerName = "Speaker 1"
+            engine.defaultSpeakerName = "Speaker 1"
         }
 
         // Launch transcription in background (consumes audio, produces transcript segments)
-        let engine = transcriptionEngine
-        transcriptionTask = Task.detached {
-            await engine.startTranscribing(from: audioStream)
+        if let whisper = engine as? TranscriptionEngine {
+            transcriptionTask = Task.detached {
+                await whisper.startTranscribing(from: audioStream)
+            }
+        } else if let parakeet = engine as? ParakeetTranscriptionEngine {
+            transcriptionTask = Task.detached {
+                await parakeet.startTranscribing(from: audioStream)
+            }
         }
 
         // Consume transcript segments. Use the diarizer's labels as the source of truth.

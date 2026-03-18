@@ -1,5 +1,19 @@
 import Foundation
 
+/// Protocol for transcription backends (WhisperKit, Parakeet, etc.).
+protocol TranscriptionProvider: AnyObject {
+    var isModelLoaded: Bool { get }
+    var isModelLoading: Bool { get }
+    var loadingStatus: String { get }
+    var downloadProgress: Double { get }
+    var accumulatedAudio: [Float] { get }
+    var defaultSpeakerName: String { get set }
+    var language: String? { get set }
+    func loadModel() async throws
+    func transcribeAudio(_ samples: [Float]) async throws -> String
+    func clearAccumulatedAudio()
+}
+
 /// Protocol for LLM backends. MLX is the primary implementation for MeetingHUD.
 protocol LLMProvider: Sendable {
     /// Stream a response from the LLM given a conversation history.
