@@ -81,19 +81,20 @@ actor StereoSpeakerDiarizer {
         }
 
         // Step 2: Sliding-window embedding extraction
+        // Use mono embedding + L-R energy ratio as spatial feature (1 embedding per window, not 3)
         struct WindowEmbedding {
             let startTime: Float
             let endTime: Float
             let monoEmb: [Float]
-            let leftEmb: [Float]
-            let rightEmb: [Float]
-            /// Combined embedding: mono + (L-R difference scaled)
+            /// L-R energy ratio: >0.5 = louder on left, <0.5 = louder on right
+            let stereoBalance: Float
+
+            /// Combined embedding: mono + stereo balance repeated as spatial features
             var combined: [Float] {
                 var c = monoEmb
-                // Append scaled channel difference to capture stereo position
-                for i in 0..<min(leftEmb.count, rightEmb.count) {
-                    c.append((leftEmb[i] - rightEmb[i]) * 2.0)
-                }
+                // Append stereo balance as a spatial feature (scaled and repeated for weight)
+                let balanceFeature = (stereoBalance - 0.5) * 4.0 // center=0, range [-2, 2]
+                for _ in 0..<16 { c.append(balanceFeature) }
                 return c
             }
         }
@@ -102,32 +103,33 @@ actor StereoSpeakerDiarizer {
         let windowSamples = Int(windowDuration * Float(sampleRate))
         let stepSamples = Int(windowStep * Float(sampleRate))
 
-        // Extract embeddings from windows that overlap with speech
         var pos = 0
         while pos + windowSamples <= frameCount {
             let windowStart = Float(pos) / Float(sampleRate)
             let windowEnd = Float(pos + windowSamples) / Float(sampleRate)
 
-            // Check if this window overlaps with any speech segment
             let hasSpeech = speechSegments.contains { seg in
                 seg.startTime < windowEnd && seg.endTime > windowStart
             }
 
             if hasSpeech {
                 let monoSlice = Array(mono[pos..<(pos + windowSamples)])
-                let leftSlice = Array(left[pos..<(pos + windowSamples)])
-                let rightSlice = Array(right[pos..<(pos + windowSamples)])
-
                 let monoEmb = weSpeaker.embed(audio: monoSlice, sampleRate: sampleRate)
-                let leftEmb = weSpeaker.embed(audio: leftSlice, sampleRate: sampleRate)
-                let rightEmb = weSpeaker.embed(audio: rightSlice, sampleRate: sampleRate)
+
+                // Compute L-R energy balance (cheap, no model needed)
+                var leftEnergy: Float = 0, rightEnergy: Float = 0
+                for i in pos..<(pos + windowSamples) {
+                    leftEnergy += left[i] * left[i]
+                    rightEnergy += right[i] * right[i]
+                }
+                let totalEnergy = leftEnergy + rightEnergy
+                let balance = totalEnergy > 0 ? leftEnergy / totalEnergy : 0.5
 
                 windows.append(WindowEmbedding(
                     startTime: windowStart,
                     endTime: windowEnd,
                     monoEmb: monoEmb,
-                    leftEmb: leftEmb,
-                    rightEmb: rightEmb
+                    stereoBalance: balance
                 ))
             }
 

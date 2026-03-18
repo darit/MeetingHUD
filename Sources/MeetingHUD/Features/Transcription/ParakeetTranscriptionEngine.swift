@@ -110,6 +110,20 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         let chunkSampleCount = Constants.Audio.sampleRate * 5 // 5s chunks
         var chunkIndex = 0
 
+        // Process chunks in a background task so audio consumption isn't blocked
+        let chunkQueue = ChunkQueue()
+
+        let processingTask = Task.detached { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { break }
+                if let (chunk, offset) = await chunkQueue.dequeue() {
+                    self.processChunk(chunk, offset: offset)
+                } else {
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+            }
+        }
+
         for await samples in audioStream {
             guard isTranscribing else { break }
             sampleAccumulator.append(contentsOf: samples)
@@ -120,7 +134,7 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
                 sampleAccumulator.removeFirst(chunkSampleCount)
 
                 let chunkOffset = TimeInterval(chunkIndex) * 5.0
-                processChunk(chunk, offset: chunkOffset)
+                await chunkQueue.enqueue(chunk, offset: chunkOffset)
                 chunkIndex += 1
             }
         }
@@ -128,8 +142,12 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         // Process remaining audio
         if !sampleAccumulator.isEmpty && isTranscribing {
             let chunkOffset = TimeInterval(chunkIndex) * 5.0
-            processChunk(sampleAccumulator, offset: chunkOffset)
+            await chunkQueue.enqueue(sampleAccumulator, offset: chunkOffset)
         }
+
+        // Wait for processing to finish
+        try? await Task.sleep(for: .seconds(2))
+        processingTask.cancel()
 
         isTranscribing = false
     }
@@ -211,4 +229,22 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         "norwegian": "no", "danish": "da", "finnish": "fi", "greek": "el",
         "czech": "cs", "romanian": "ro", "hungarian": "hu", "catalan": "ca",
     ]
+}
+
+/// Thread-safe FIFO queue for audio chunks waiting to be transcribed.
+private actor ChunkQueue {
+    private var items: [([Float], TimeInterval)] = []
+
+    func enqueue(_ chunk: [Float], offset: TimeInterval) {
+        // Keep max 3 pending — drop oldest if backed up
+        if items.count >= 3 {
+            items.removeFirst()
+        }
+        items.append((chunk, offset))
+    }
+
+    func dequeue() -> ([Float], TimeInterval)? {
+        guard !items.isEmpty else { return nil }
+        return items.removeFirst()
+    }
 }
