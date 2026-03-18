@@ -61,37 +61,22 @@ struct OverlayView: View {
                 Divider().opacity(0.3)
 
                 HStack(spacing: 0) {
-                    // MARK: - Column 1: Speakers / Profiles
+                    // MARK: - Column 1: Speakers / Profiles (narrow sidebar)
                     if appState.isRecording {
                         SpeakersColumn(
                             speakers: appState.speakers,
                             onRename: { old, new in appState.renameSpeaker(from: old, to: new) },
                             onRemove: { name in appState.removeSpeaker(name: name) }
                         )
-                            .frame(width: 200)
+                            .frame(width: 180)
                     } else {
                         ProfilesColumn()
-                            .frame(width: 200)
+                            .frame(width: 180)
                     }
 
                     Divider().opacity(0.3)
 
-                    // MARK: - Column 2: Live Transcript
-                    TranscriptColumn(
-                        segments: appState.activeTranscriptSegments,
-                        isModelLoading: appState.isModelLoading,
-                        loadingStatus: appState.activeTranscriptionEngine.loadingStatus,
-                        downloadProgress: appState.activeTranscriptionEngine.downloadProgress,
-                        recordingError: appState.recordingError,
-                        isRecording: appState.isRecording,
-                        audioLevel: appState.audioCaptureManager.audioLevel,
-                        onRenameSpeaker: { old, new in appState.renameSpeaker(from: old, to: new) }
-                    )
-                    .frame(minWidth: 360)
-
-                    Divider().opacity(0.3)
-
-                    // MARK: - Column 3: Insights Dashboard
+                    // MARK: - Column 2: Insights Dashboard (main panel)
                     InsightsColumn(
                         recommendations: appState.recommendations,
                         currentTopic: appState.currentTopicName,
@@ -105,7 +90,22 @@ struct OverlayView: View {
                         segments: appState.activeTranscriptSegments,
                         onDismiss: { id in appState.dismissRecommendation(id: id) }
                     )
-                        .frame(width: 280)
+                    .frame(minWidth: 400)
+
+                    Divider().opacity(0.3)
+
+                    // MARK: - Column 3: Live Transcript (compact sidebar)
+                    TranscriptColumn(
+                        segments: appState.activeTranscriptSegments,
+                        isModelLoading: appState.isModelLoading,
+                        loadingStatus: appState.activeTranscriptionEngine.loadingStatus,
+                        downloadProgress: appState.activeTranscriptionEngine.downloadProgress,
+                        recordingError: appState.recordingError,
+                        isRecording: appState.isRecording,
+                        audioLevel: appState.audioCaptureManager.audioLevel,
+                        onRenameSpeaker: { old, new in appState.renameSpeaker(from: old, to: new) }
+                    )
+                    .frame(width: 320)
                 }
 
                 Divider().opacity(0.3)
@@ -1231,18 +1231,28 @@ private struct InsightsColumn: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    // Current topic
+                    // Current topic banner
                     if let topic = currentTopic {
-                        SectionCard(icon: "bubble.left.and.text.bubble.right", color: .purple) {
-                            Text(topic)
-                                .font(.system(size: 11, weight: .semibold))
+                        HStack(spacing: 8) {
+                            Image(systemName: "bubble.left.and.text.bubble.right")
+                                .font(.system(size: 10))
                                 .foregroundStyle(.purple)
+                            Text(topic)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.purple)
+                            Spacer()
                         }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                     }
 
-                    // Speaker distribution (only with 2+ speakers)
-                    if speakers.count > 1 && totalTalkTime > 0 {
-                        SectionCard(icon: "person.2", color: .blue) {
+                    // Dashboard grid — 2 columns for compact widgets
+                    let columns = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
+                    LazyVGrid(columns: columns, spacing: 8) {
+                        // Speaker distribution
+                        if speakers.count > 1 && totalTalkTime > 0 {
+                            SectionCard(icon: "person.2", color: .blue) {
                             VStack(alignment: .leading, spacing: 3) {
                                 ForEach(speakers.prefix(4)) { speaker in
                                     HStack(spacing: 6) {
@@ -1385,8 +1395,9 @@ private struct InsightsColumn: View {
                             }
                         }
                     }
+                    } // end LazyVGrid
 
-                    // LLM insights (dismissable cards)
+                    // LLM insights (full-width, below the grid)
                     if !recommendations.isEmpty {
                         ForEach(recommendations) { rec in
                             RecommendationCard(recommendation: rec, onDismiss: {
