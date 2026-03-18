@@ -83,6 +83,8 @@ struct OverlayView: View {
                         loadingStatus: appState.activeTranscriptionEngine.loadingStatus,
                         downloadProgress: appState.activeTranscriptionEngine.downloadProgress,
                         recordingError: appState.recordingError,
+                        isRecording: appState.isRecording,
+                        audioLevel: appState.audioCaptureManager.audioLevel,
                         onRenameSpeaker: { old, new in appState.renameSpeaker(from: old, to: new) }
                     )
                     .frame(minWidth: 360)
@@ -815,6 +817,8 @@ private struct TranscriptColumn: View {
     var loadingStatus: String = ""
     var downloadProgress: Double = 0
     var recordingError: String? = nil
+    var isRecording: Bool = false
+    var audioLevel: Float = 0
     var onRenameSpeaker: ((String, String) -> Void)? = nil
 
     var body: some View {
@@ -881,11 +885,35 @@ private struct TranscriptColumn: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if segments.isEmpty {
-                ContentUnavailableView {
-                    Label("Waiting for audio...", systemImage: "waveform")
-                        .font(.caption)
+                VStack(spacing: 8) {
+                    if isRecording {
+                        if audioLevel > 0.001 {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                            Text("Transcribing audio…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("First results appear after ~15s")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                        } else {
+                            Image(systemName: "waveform")
+                                .font(.title2)
+                                .foregroundStyle(.tertiary)
+                            Text("Listening… no audio detected")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Image(systemName: "waveform")
+                            .font(.title2)
+                            .foregroundStyle(.tertiary)
+                        Text("Press Record to start")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .frame(maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // Phase 1.2: Group by silence gaps
                 let groups = groupByConversation(segments)
