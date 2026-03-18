@@ -56,6 +56,11 @@ final class AudioCaptureManager: @unchecked Sendable {
     /// Enables voice processing (AEC + noise suppression) on mic. Off by default
     /// because it causes macOS to lower system audio volume ("ducking").
     var isNoiseCancellationEnabled = false
+    /// Accumulated stereo audio (interleaved L/R, 16kHz) for diarization.
+    /// Stereo preserves spatial info that helps distinguish speakers.
+    private(set) var accumulatedStereoAudio: [Float] = []
+    /// Whether stereo audio is available (ScreenCaptureKit captures stereo).
+    var hasStereoAudio: Bool { !accumulatedStereoAudio.isEmpty }
 
     enum CaptureMode: String {
         case processTap = "System Audio (Process Tap)"
@@ -167,6 +172,7 @@ final class AudioCaptureManager: @unchecked Sendable {
         streamContinuation?.finish()
         streamContinuation = nil
         capturedProcesses = []
+        accumulatedStereoAudio = []
         audioLevel = 0.0
         micLevel = 0.0
         _audioLevelStorage.pointee = 0
@@ -277,7 +283,7 @@ final class AudioCaptureManager: @unchecked Sendable {
             config.capturesAudio = true
             config.excludesCurrentProcessAudio = true
             config.sampleRate = 16000
-            config.channelCount = 1
+            config.channelCount = 2  // Stereo for better speaker diarization
             // Minimize video overhead — we only want audio
             config.width = 2
             config.height = 2
@@ -285,7 +291,10 @@ final class AudioCaptureManager: @unchecked Sendable {
 
             let handler = SCStreamAudioHandler(
                 continuation: self.streamContinuation,
-                levelPtr: self._audioLevelStorage
+                levelPtr: self._audioLevelStorage,
+                stereoAccumulator: { [weak self] stereo in
+                    self?.accumulatedStereoAudio.append(contentsOf: stereo)
+                }
             )
             self.scStreamDelegate = handler
 
@@ -586,21 +595,27 @@ final class AudioCaptureManager: @unchecked Sendable {
 
 // MARK: - ScreenCaptureKit Audio Handler
 
-/// Receives audio samples from SCStream and forwards them to the async stream.
+/// Receives stereo audio from SCStream, yields mono for transcription,
+/// accumulates stereo for diarization.
 final class SCStreamAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable {
     private let continuation: AsyncStream<[Float]>.Continuation?
     private let levelPtr: UnsafeMutablePointer<Float>
+    private let stereoAccumulator: (([Float]) -> Void)?
 
-    init(continuation: AsyncStream<[Float]>.Continuation?, levelPtr: UnsafeMutablePointer<Float>) {
+    init(
+        continuation: AsyncStream<[Float]>.Continuation?,
+        levelPtr: UnsafeMutablePointer<Float>,
+        stereoAccumulator: (([Float]) -> Void)? = nil
+    ) {
         self.continuation = continuation
         self.levelPtr = levelPtr
+        self.stereoAccumulator = stereoAccumulator
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
         guard sampleBuffer.isValid, sampleBuffer.numSamples > 0 else { return }
 
-        // Extract Float32 samples from CMSampleBuffer
         guard let blockBuffer = sampleBuffer.dataBuffer else { return }
         let length = CMBlockBufferGetDataLength(blockBuffer)
         guard length > 0 else { return }
@@ -610,17 +625,29 @@ final class SCStreamAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable 
         let status = CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: &lengthAtOffset, totalLengthOut: nil, dataPointerOut: &dataPointer)
         guard status == noErr, let ptr = dataPointer else { return }
 
-        // SCStream configured for 16kHz mono Float32
         let floatPtr = UnsafeRawPointer(ptr).bindMemory(to: Float.self, capacity: length / MemoryLayout<Float>.size)
-        let frameCount = length / MemoryLayout<Float>.size
-        let samples = Array(UnsafeBufferPointer(start: floatPtr, count: frameCount))
+        let totalSamples = length / MemoryLayout<Float>.size
 
-        // RMS metering
+        // SCStream is configured for stereo (2 channels, interleaved L/R)
+        let frameCount = totalSamples / 2
+        guard frameCount > 0 else { return }
+
+        // Accumulate raw stereo for diarization
+        let stereo = Array(UnsafeBufferPointer(start: floatPtr, count: totalSamples))
+        stereoAccumulator?(stereo)
+
+        // Mix down to mono for transcription: (L + R) / 2
+        var mono = [Float](repeating: 0, count: frameCount)
+        for i in 0..<frameCount {
+            mono[i] = (stereo[i * 2] + stereo[i * 2 + 1]) * 0.5
+        }
+
+        // RMS metering on mono
         var sumOfSquares: Float = 0
-        for sample in samples { sumOfSquares += sample * sample }
+        for sample in mono { sumOfSquares += sample * sample }
         levelPtr.pointee = sqrtf(sumOfSquares / Float(max(frameCount, 1)))
 
-        continuation?.yield(samples)
+        continuation?.yield(mono)
     }
 }
 
