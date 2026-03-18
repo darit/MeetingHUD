@@ -96,6 +96,9 @@ struct OverlayView: View {
                         topics: appState.currentTopics,
                         actionItems: appState.currentActionItems,
                         speakers: appState.speakers,
+                        contentType: appState.detectedContentType,
+                        segmentCount: appState.activeTranscriptSegments.count,
+                        meetingStartDate: appState.currentMeeting?.date,
                         onDismiss: { id in appState.dismissRecommendation(id: id) }
                     )
                         .frame(width: 280)
@@ -357,20 +360,6 @@ private struct OverlayToolbar: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(.secondary.opacity(0.15), in: Capsule())
-
-                // Content type badge
-                if appState.detectedContentType != .unknown {
-                    HStack(spacing: 3) {
-                        Image(systemName: appState.detectedContentType.icon)
-                            .font(.system(size: 8))
-                        Text(appState.detectedContentType.rawValue)
-                            .font(.system(size: 9))
-                    }
-                    .foregroundStyle(.purple)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.purple.opacity(0.12), in: Capsule())
-                }
 
                 // Mute mic button
                 Button {
@@ -1065,6 +1054,9 @@ private struct InsightsColumn: View {
     var topics: [TopicInfo]
     var actionItems: [SignalDetector.DetectedAction]
     var speakers: [SpeakerInfo]
+    var contentType: ContentTypeClassifier.ContentType = .unknown
+    var segmentCount: Int = 0
+    var meetingStartDate: Date?
     var onDismiss: ((UUID) -> Void)?
 
     private var totalTalkTime: TimeInterval {
@@ -1074,10 +1066,30 @@ private struct InsightsColumn: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
-            Label("Insights", systemImage: "lightbulb.fill")
-                .font(Theme.Typography.columnHeader)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 6)
+            HStack {
+                Label("Insights", systemImage: "lightbulb.fill")
+                    .font(Theme.Typography.columnHeader)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if contentType != .unknown {
+                    HStack(spacing: 3) {
+                        Image(systemName: contentType.icon)
+                            .font(.system(size: 8))
+                        Text(contentType.rawValue)
+                            .font(.system(size: 9))
+                    }
+                    .foregroundStyle(.purple)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.purple.opacity(0.12), in: Capsule())
+                }
+                if let start = meetingStartDate {
+                    Text(start, style: .timer)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.bottom, 6)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {

@@ -68,7 +68,7 @@ final class ContentTypeClassifier {
 
     // MARK: - Dependencies
 
-    private let llmProvider: any LLMProvider
+    var llmProvider: any LLMProvider
     private let analysisQueue: AnalysisQueue
 
     init(llmProvider: any LLMProvider, analysisQueue: AnalysisQueue) {

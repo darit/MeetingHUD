@@ -68,7 +68,9 @@ final class MeetingEngine {
 
     // MARK: - Private State
 
-    var llmProvider: any LLMProvider
+    var llmProvider: any LLMProvider {
+        didSet { contentTypeClassifier.llmProvider = llmProvider }
+    }
     private let analysisQueue: AnalysisQueue
     private let sentimentAnalyzer = SentimentAnalyzer()
     private let topicExtractor = TopicExtractor()
