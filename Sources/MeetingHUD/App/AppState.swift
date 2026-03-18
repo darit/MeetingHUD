@@ -231,6 +231,9 @@ final class AppState {
     /// Read-only access to current action items (from MeetingEngine).
     var currentActionItems: [SignalDetector.DetectedAction] { meetingEngine?.detectedActions ?? [] }
 
+    /// Read-only access to key statements (from MeetingEngine).
+    var currentKeyStatements: [SignalDetector.DetectedStatement] { meetingEngine?.keyStatements ?? [] }
+
     /// Live meeting analytics engine (active during recording).
     private var meetingEngine: MeetingEngine?
 

@@ -88,8 +88,8 @@ final class MeetingEngine {
     /// Per-speaker sentiment accumulation for averaging.
     private var sentimentAccumulator: [String: (total: Double, count: Int)] = [:]
 
-    /// Per-speaker key statements collected from signal detection.
-    private var speakerKeyStatements: [String: [String]] = [:]
+    /// Key statements collected from signal detection (speaker + text + category).
+    private(set) var keyStatements: [SignalDetector.DetectedStatement] = []
 
     /// Per-speaker topics raised.
     private var speakerTopics: [String: Set<String>] = [:]
@@ -194,14 +194,14 @@ final class MeetingEngine {
             let avgSentiment = sentimentData.map { $0.count > 0 ? $0.total / Double($0.count) : 0.0 } ?? 0.0
             let metrics = speakerMetrics[speaker]
             let topicsRaised = Array(speakerTopics[speaker] ?? [])
-            let keyStatements = speakerKeyStatements[speaker] ?? []
+            let speakerStmts = keyStatements.filter { $0.speakerLabel == speaker }.map(\.statement)
 
             perSpeaker[speaker] = SpeakerAnalytics(
                 avgSentiment: avgSentiment,
                 vocabularyComplexity: metrics?.vocabularyComplexity ?? 0,
                 questionRatio: metrics?.questionRatio ?? 0,
                 topicsRaised: topicsRaised,
-                keyStatements: keyStatements
+                keyStatements: speakerStmts
             )
         }
 
@@ -435,9 +435,9 @@ final class MeetingEngine {
         }
 
         for stmt in result.keyStatements {
-            let speaker = stmt.speakerLabel
-            if !speaker.isEmpty {
-                speakerKeyStatements[speaker, default: []].append(stmt.statement)
+            // Deduplicate by statement text
+            if !keyStatements.contains(where: { $0.statement == stmt.statement }) {
+                keyStatements.append(stmt)
             }
         }
     }

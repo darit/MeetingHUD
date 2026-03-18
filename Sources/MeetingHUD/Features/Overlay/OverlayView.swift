@@ -99,6 +99,8 @@ struct OverlayView: View {
                         contentType: appState.detectedContentType,
                         segmentCount: appState.activeTranscriptSegments.count,
                         meetingStartDate: appState.currentMeeting?.date,
+                        keyStatements: appState.currentKeyStatements,
+                        segments: appState.activeTranscriptSegments,
                         onDismiss: { id in appState.dismissRecommendation(id: id) }
                     )
                         .frame(width: 280)
@@ -1057,10 +1059,74 @@ private struct InsightsColumn: View {
     var contentType: ContentTypeClassifier.ContentType = .unknown
     var segmentCount: Int = 0
     var meetingStartDate: Date?
+    var keyStatements: [SignalDetector.DetectedStatement] = []
+    var segments: [TranscriptSegment] = []
     var onDismiss: ((UUID) -> Void)?
 
     private var totalTalkTime: TimeInterval {
         speakers.reduce(0) { $0 + $1.talkTime }
+    }
+
+    /// Rolling sentiment data points (averaged per 5-segment window).
+    private var sentimentDataPoints: [Double] {
+        let scored = segments.compactMap(\.sentiment)
+        guard scored.count >= 3 else { return [] }
+        let windowSize = max(3, scored.count / 10)
+        return stride(from: 0, to: scored.count, by: windowSize).map { start in
+            let end = min(start + windowSize, scored.count)
+            let window = scored[start..<end]
+            return window.reduce(0.0, +) / Double(window.count)
+        }
+    }
+
+    /// Meeting health score based on participation balance, topic coverage, and decisions.
+    private var meetingHealth: (score: Int, color: Color, factors: [String]) {
+        var score = 50 // base
+        var factors: [String] = []
+
+        // Participation balance (0-25 points): how evenly distributed talk time is
+        if speakers.count > 1 && totalTalkTime > 0 {
+            let percents = speakers.map { $0.talkTime / totalTalkTime }
+            let ideal = 1.0 / Double(speakers.count)
+            let deviation = percents.map { abs($0 - ideal) }.reduce(0, +) / Double(speakers.count)
+            let balanceScore = Int(max(0, 25 - deviation * 100))
+            score += balanceScore
+            if balanceScore < 10 {
+                let dominant = speakers.max(by: { $0.talkTime < $1.talkTime })?.name ?? ""
+                factors.append("\(dominant) dominates (\(Int((speakers.max(by: { $0.talkTime < $1.talkTime })?.talkTime ?? 0) / totalTalkTime * 100))%)")
+            } else {
+                factors.append("Balanced participation")
+            }
+        }
+
+        // Topic coverage (0-15 points)
+        let topicScore = min(15, topics.count * 5)
+        score += topicScore
+        if topics.isEmpty {
+            factors.append("No topics detected yet")
+        } else {
+            factors.append("\(topics.count) topic\(topics.count == 1 ? "" : "s") covered")
+        }
+
+        // Action items (0-10 points) — having some is positive
+        if !actionItems.isEmpty {
+            score += min(10, actionItems.count * 3)
+            factors.append("\(actionItems.count) action item\(actionItems.count == 1 ? "" : "s")")
+        }
+
+        let clamped = min(100, max(0, score))
+        let color: Color = clamped >= 70 ? .green : clamped >= 40 ? .yellow : .red
+        return (clamped, color, factors)
+    }
+
+    private func categoryColor(_ category: String) -> Color {
+        switch category.lowercased() {
+        case "decision": return .green
+        case "commitment": return .blue
+        case "risk": return .red
+        case "concern": return .orange
+        default: return .secondary
+        }
     }
 
     var body: some View {
@@ -1174,6 +1240,80 @@ private struct InsightsColumn: View {
                         }
                     }
 
+                    // Key quotes
+                    if !keyStatements.isEmpty {
+                        SectionCard(icon: "quote.opening", color: .indigo) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(Array(keyStatements.suffix(3).enumerated()), id: \.offset) { _, stmt in
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text("\"\(stmt.statement)\"")
+                                            .font(.system(size: 10))
+                                            .italic()
+                                            .lineLimit(2)
+                                        HStack(spacing: 4) {
+                                            Text("— \(stmt.speakerLabel)")
+                                                .font(.system(size: 9, weight: .medium))
+                                            Text(stmt.category)
+                                                .font(.system(size: 8))
+                                                .padding(.horizontal, 4)
+                                                .padding(.vertical, 1)
+                                                .background(categoryColor(stmt.category).opacity(0.15), in: Capsule())
+                                        }
+                                        .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Sentiment trend
+                    if sentimentDataPoints.count >= 3 {
+                        SectionCard(icon: "chart.xyaxis.line", color: .green) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                SentimentSparkline(dataPoints: sentimentDataPoints)
+                                    .frame(height: 30)
+                                HStack {
+                                    Text("Negative")
+                                        .font(.system(size: 8))
+                                        .foregroundStyle(.red.opacity(0.6))
+                                    Spacer()
+                                    let avg = sentimentDataPoints.reduce(0.0, +) / Double(sentimentDataPoints.count)
+                                    Text("avg: \(avg > 0 ? "+" : "")\(String(format: "%.1f", avg))")
+                                        .font(.system(size: 8, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Text("Positive")
+                                        .font(.system(size: 8))
+                                        .foregroundStyle(.green.opacity(0.6))
+                                }
+                            }
+                        }
+                    }
+
+                    // Meeting health score
+                    if speakers.count > 1 && totalTalkTime > 30 {
+                        SectionCard(icon: "heart.text.square", color: .pink) {
+                            let health = meetingHealth
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Meeting Health")
+                                        .font(.system(size: 10, weight: .medium))
+                                    Spacer()
+                                    Text("\(health.score)%")
+                                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                                        .foregroundStyle(health.color)
+                                }
+                                HealthBar(value: Double(health.score) / 100.0, color: health.color)
+                                    .frame(height: 4)
+                                ForEach(health.factors, id: \.self) { factor in
+                                    Text(factor)
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+
                     // LLM insights (dismissable cards)
                     if !recommendations.isEmpty {
                         ForEach(recommendations) { rec in
@@ -1199,6 +1339,63 @@ private struct InsightsColumn: View {
 }
 
 /// A topic row that expands inline to show its summary on tap.
+/// Mini sparkline chart for sentiment trend.
+private struct SentimentSparkline: View {
+    let dataPoints: [Double]
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            let midY = h / 2
+
+            // Zero line
+            Path { path in
+                path.move(to: CGPoint(x: 0, y: midY))
+                path.addLine(to: CGPoint(x: w, y: midY))
+            }
+            .stroke(.secondary.opacity(0.2), lineWidth: 0.5)
+
+            // Sentiment line
+            Path { path in
+                guard dataPoints.count >= 2 else { return }
+                let step = w / CGFloat(dataPoints.count - 1)
+                for (i, val) in dataPoints.enumerated() {
+                    let x = CGFloat(i) * step
+                    let y = midY - CGFloat(val) * midY // -1→bottom, +1→top
+                    if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+                    else { path.addLine(to: CGPoint(x: x, y: y)) }
+                }
+            }
+            .stroke(
+                LinearGradient(
+                    colors: [.red.opacity(0.7), .yellow, .green.opacity(0.7)],
+                    startPoint: .bottom, endPoint: .top
+                ),
+                style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
+            )
+        }
+    }
+}
+
+/// Simple horizontal bar for meeting health.
+private struct HealthBar: View {
+    let value: Double // 0.0–1.0
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            RoundedRectangle(cornerRadius: 2)
+                .fill(color.opacity(0.2))
+                .overlay(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(color)
+                        .frame(width: geo.size.width * CGFloat(min(1, max(0, value))))
+                }
+        }
+    }
+}
+
 private struct TopicRow: View {
     let topic: TopicInfo
     let isCurrent: Bool
