@@ -63,9 +63,12 @@ final class MeetingEngine {
     /// Called at the end of each analysis pass (for periodic recommendation agent triggers).
     var onAnalysisPassComplete: (@MainActor () -> Void)?
 
+    /// Debug log callback (wired to AppState.addDebug).
+    var onDebugLog: ((String) -> Void)?
+
     // MARK: - Private State
 
-    private let llmProvider: any LLMProvider
+    var llmProvider: any LLMProvider
     private let analysisQueue: AnalysisQueue
     private let sentimentAnalyzer = SentimentAnalyzer()
     private let topicExtractor = TopicExtractor()
@@ -255,13 +258,19 @@ final class MeetingEngine {
 
     // MARK: - Analysis Pass
 
+    private func log(_ msg: String) {
+        print("[MeetingEngine] \(msg)")
+        onDebugLog?(msg)
+    }
+
     private func runAnalysisPass() async {
         let isAvailable = await llmProvider.isAvailable
         guard isAvailable else {
-            print("[MeetingEngine] Analysis skipped — LLM not available (\(llmProvider.displayName))")
+            log("Analysis skipped — LLM not available (\(llmProvider.displayName))")
             return
         }
         guard let segments = segmentsProvider?(), !segments.isEmpty else { return }
+        log("Analysis pass: \(segments.count) segs, provider=\(llmProvider.displayName)")
 
         // Sentiment analysis on new segments
         if sentimentWatermark < segments.count {
@@ -285,8 +294,9 @@ final class MeetingEngine {
                         self.applySentimentScores(scores, speakerByID: speakerByID)
                     }
                 } catch {
-                    print("[MeetingEngine] Sentiment analysis failed: \(error)")
+                    let msg = error.localizedDescription
                     await MainActor.run {
+                        self.log("Sentiment failed: \(msg)")
                         self.sentimentWatermark = watermarkCapture
                     }
                 }
@@ -315,8 +325,9 @@ final class MeetingEngine {
                         self.applyNewTopics(newTopics)
                     }
                 } catch {
-                    print("[MeetingEngine] Topic extraction failed: \(error)")
+                    let msg = error.localizedDescription
                     await MainActor.run {
+                        self.log("Topic extraction failed: \(msg)")
                         self.topicWatermark = topicWatermarkCapture
                     }
                 }
@@ -341,8 +352,9 @@ final class MeetingEngine {
                         self.applySignals(result)
                     }
                 } catch {
-                    print("[MeetingEngine] Signal detection failed: \(error)")
+                    let msg = error.localizedDescription
                     await MainActor.run {
+                        self.log("Signal detection failed: \(msg)")
                         self.signalWatermark = signalWatermarkCapture
                     }
                 }

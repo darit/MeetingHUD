@@ -24,7 +24,7 @@ final class RecommendationAgent {
 
     // MARK: - Dependencies
 
-    private let llmProvider: any LLMProvider
+    var llmProvider: any LLMProvider
     private let memoryManager: MemoryManager
     private let analysisQueue: AnalysisQueue
 
@@ -120,10 +120,23 @@ final class RecommendationAgent {
 
     // MARK: - Private
 
+    /// Callback for debug messages (wired to AppState.addDebug).
+    var onDebugLog: ((String) -> Void)?
+
+    private func log(_ msg: String) {
+        print("[RecommendationAgent] \(msg)")
+        onDebugLog?(msg)
+    }
+
     private func shouldGenerate() -> Bool {
-        guard !isGenerating else { return false }
+        guard !isGenerating else {
+            log("Skipped — already generating")
+            return false
+        }
         if let lastTime = lastGenerationTime,
            Date.now.timeIntervalSince(lastTime) < cooldownInterval {
+            let remaining = Int(cooldownInterval - Date.now.timeIntervalSince(lastTime))
+            log("Skipped — cooldown (\(remaining)s remaining)")
             return false
         }
         return true
@@ -140,8 +153,12 @@ final class RecommendationAgent {
         contentType: ContentTypeClassifier.ContentType? = nil
     ) {
         // Don't generate insights when there's no meaningful transcript content
-        guard allSegments.count >= 5 else { return }
+        guard allSegments.count >= 5 else {
+            log("Skipped — only \(allSegments.count) segments (need 5+)")
+            return
+        }
 
+        log("Generating insights (\(trigger)) via \(llmProvider.displayName), \(allSegments.count) segments")
         isGenerating = true
         lastGenerationTime = .now
 
@@ -177,12 +194,17 @@ final class RecommendationAgent {
                     await MainActor.run {
                         guard let self else { return }
                         let recommendations = self.parseRecommendations(response)
-                        if !recommendations.isEmpty {
+                        if recommendations.isEmpty {
+                            self.log("LLM returned no parseable insights")
+                        } else {
+                            self.log("Generated \(recommendations.count) insights")
                             self.onRecommendations?(recommendations)
                         }
                     }
                 } catch {
-                    print("[RecommendationAgent] Generation failed: \(error)")
+                    await MainActor.run { [weak self] in
+                        self?.log("Generation failed: \(error.localizedDescription)")
+                    }
                 }
             }
         }

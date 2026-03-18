@@ -186,6 +186,13 @@ final class AppState {
             MLXModelManager.shared.unloadModel()
         }
         UserDefaults.standard.set(choice.rawValue, forKey: "analysisProvider")
+
+        // Propagate to running analysis engines so mid-session switches take effect
+        let provider = analysisLLMProvider
+        meetingEngine?.llmProvider = provider
+        recommendationAgent.llmProvider = provider
+        memoryManager.llmProvider = provider
+
         addDebug("Switched analysis provider to \(choice.rawValue)")
     }
 
@@ -290,6 +297,9 @@ final class AppState {
             memoryManager: memoryManager,
             analysisQueue: sharedAnalysisQueue
         )
+        recommendationAgent.onDebugLog = { [weak self] msg in
+            self?.addDebug(msg)
+        }
     }
 
     // MARK: - Tasks
@@ -412,6 +422,7 @@ final class AppState {
         // Create and start the analytics engine (uses selected analysis provider)
         let provider = analysisLLMProvider
         let engine = MeetingEngine(llmProvider: provider, analysisQueue: sharedAnalysisQueue)
+        engine.onDebugLog = { [weak self] msg in self?.addDebug(msg) }
         engine.segmentsProvider = { [weak self] in
             self?.activeTranscriptSegments ?? []
         }
@@ -757,7 +768,8 @@ final class AppState {
         }
 
         // Start the full analysis pipeline
-        let engine = MeetingEngine(llmProvider: mlxProvider, analysisQueue: sharedAnalysisQueue)
+        let engine = MeetingEngine(llmProvider: analysisLLMProvider, analysisQueue: sharedAnalysisQueue)
+        engine.onDebugLog = { [weak self] msg in self?.addDebug(msg) }
         engine.segmentsProvider = { [weak self] in
             self?.activeTranscriptSegments ?? []
         }

@@ -36,7 +36,7 @@ final class MemoryManager {
 
     // MARK: - Dependencies
 
-    private let llmProvider: any LLMProvider
+    var llmProvider: any LLMProvider
     private let analysisQueue: AnalysisQueue
     private var compressionTimer: Task<Void, Never>?
 
