@@ -23,6 +23,9 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
     /// Language code for transcription. nil = auto-detect (Parakeet handles 25 languages).
     var language: String? = nil
 
+    /// Whether language has been auto-detected and locked for this session.
+    private var languageLocked = false
+
 
     // MARK: - Parakeet
 
@@ -100,6 +103,7 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
 
         isTranscribing = true
         accumulatedAudio = []
+        languageLocked = language != nil // if manually set, don't override
 
         // Parakeet benefits from longer chunks for better punctuation context
         var sampleAccumulator: [Float] = []
@@ -164,23 +168,41 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
     private func processChunk(_ samples: [Float], offset: TimeInterval) {
         guard let model else { return }
 
-        do {
-            let text = try model.transcribeAudio(samples, sampleRate: 16000, language: language)
+        // Use transcribeWithLanguage to get confidence score
+        let result = model.transcribeWithLanguage(audio: samples, sampleRate: 16000, language: language)
 
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-
-            let chunkDuration = TimeInterval(samples.count) / TimeInterval(Constants.Audio.sampleRate)
-
-            let segment = TranscriptSegment(
-                text: trimmed,
-                speakerLabel: defaultSpeakerName,
-                startTime: offset,
-                endTime: offset + chunkDuration
-            )
-            segmentContinuation?.yield(segment)
-        } catch {
-            print("[ParakeetEngine] Transcription error: \(error)")
+        // Log auto-detected language on first confident chunk
+        if language == nil && !languageLocked {
+            if result.confidence > 0.5, let lang = result.language, !lang.isEmpty {
+                let langCode = Self.languageNameToCode[lang.lowercased()] ?? lang
+                languageLocked = true
+                print("[ParakeetEngine] Detected language: \(lang) → \(langCode) (confidence: \(String(format: "%.2f", result.confidence)))")
+            }
         }
+
+        // Skip low-confidence chunks (likely noise/filler like "Uh", "The")
+        guard result.confidence > 0.3 else { return }
+
+        let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let chunkDuration = TimeInterval(samples.count) / TimeInterval(Constants.Audio.sampleRate)
+
+        let segment = TranscriptSegment(
+            text: trimmed,
+            speakerLabel: defaultSpeakerName,
+            startTime: offset,
+            endTime: offset + chunkDuration
+        )
+        segmentContinuation?.yield(segment)
     }
+
+    private static let languageNameToCode: [String: String] = [
+        "english": "en", "spanish": "es", "french": "fr", "german": "de",
+        "italian": "it", "portuguese": "pt", "dutch": "nl", "russian": "ru",
+        "chinese": "zh", "japanese": "ja", "korean": "ko", "arabic": "ar",
+        "hindi": "hi", "turkish": "tr", "polish": "pl", "swedish": "sv",
+        "norwegian": "no", "danish": "da", "finnish": "fi", "greek": "el",
+        "czech": "cs", "romanian": "ro", "hungarian": "hu", "catalan": "ca",
+    ]
 }

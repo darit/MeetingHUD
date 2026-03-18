@@ -4,8 +4,10 @@ import SwiftData
 /// A sheet showing previous meetings: list, details, insights, and LLM Q&A.
 struct MeetingHistorySheet: View {
     @Bindable var appState: AppState
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \Meeting.date, order: .reverse) private var meetings: [Meeting]
     @State private var selected: Meeting?
+    @State private var meetingToDelete: Meeting?
 
     var body: some View {
         HSplitView {
@@ -40,6 +42,16 @@ struct MeetingHistorySheet: View {
                     List(meetings, selection: $selected) { meeting in
                         MeetingListRow(meeting: meeting)
                             .tag(meeting)
+                            .contextMenu {
+                                Button("Delete", role: .destructive) {
+                                    meetingToDelete = meeting
+                                }
+                            }
+                            .swipeActions(edge: .trailing) {
+                                Button("Delete", role: .destructive) {
+                                    meetingToDelete = meeting
+                                }
+                            }
                     }
                     .listStyle(.sidebar)
                 }
@@ -63,6 +75,22 @@ struct MeetingHistorySheet: View {
         .frame(minWidth: 700, minHeight: 500)
         .onAppear {
             selected = meetings.first
+        }
+        .alert("Delete Meeting?", isPresented: Binding(
+            get: { meetingToDelete != nil },
+            set: { if !$0 { meetingToDelete = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { meetingToDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let meeting = meetingToDelete {
+                    if selected == meeting { selected = nil }
+                    modelContext.delete(meeting)
+                    try? modelContext.save()
+                    meetingToDelete = nil
+                }
+            }
+        } message: {
+            Text("This will permanently delete this meeting and its transcript.")
         }
     }
 }
