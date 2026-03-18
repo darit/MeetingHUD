@@ -9,6 +9,8 @@ protocol TranscriptionProvider: AnyObject {
     var accumulatedAudio: [Float] { get }
     var defaultSpeakerName: String { get set }
     var language: String? { get set }
+    /// When true, incoming audio is ignored (not transcribed or accumulated).
+    var isMuted: Bool { get set }
     func loadModel() async throws
     func transcribeAudio(_ samples: [Float]) async throws -> String
     func clearAccumulatedAudio()

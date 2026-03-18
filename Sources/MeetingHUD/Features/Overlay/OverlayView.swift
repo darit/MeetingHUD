@@ -372,6 +372,16 @@ private struct OverlayToolbar: View {
                     .background(.purple.opacity(0.12), in: Capsule())
                 }
 
+                // Mute mic button
+                Button {
+                    appState.toggleMute()
+                } label: {
+                    Image(systemName: appState.isMicMuted ? "mic.slash.fill" : "mic.fill")
+                        .font(.caption2)
+                        .foregroundStyle(appState.isMicMuted ? .red : .secondary)
+                }
+                .buttonStyle(.plain)
+
                 // Clear button
                 Button {
                     appState.clearLiveData()
@@ -381,7 +391,16 @@ private struct OverlayToolbar: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Clear transcript")
+
+                // Hide overlay button
+                Button {
+                    appState.overlayPanel?.orderOut(nil)
+                } label: {
+                    Image(systemName: "eye.slash")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
 
             Spacer()

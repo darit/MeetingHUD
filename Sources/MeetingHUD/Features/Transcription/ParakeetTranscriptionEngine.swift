@@ -23,6 +23,9 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
     /// Language code for transcription. nil = auto-detect (Parakeet handles 25 languages).
     var language: String? = nil
 
+    /// When true, incoming audio is ignored (not transcribed or accumulated).
+    var isMuted = false
+
     // MARK: - Parakeet
 
     private var model: ParakeetASRModel?
@@ -107,6 +110,7 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
 
         for await samples in audioStream {
             guard isTranscribing else { break }
+            guard !isMuted else { continue }
 
             sampleAccumulator.append(contentsOf: samples)
             accumulatedAudio.append(contentsOf: samples)

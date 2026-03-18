@@ -27,7 +27,14 @@ final class SpeakerDiarizer: Sendable {
             embeddingEngine: .coreml
         )
 
-        let result = pipeline.diarize(audio: audio, sampleRate: 16000, config: .default)
+        let config = DiarizationConfig(
+            onset: 0.4,
+            offset: 0.25,
+            minSpeechDuration: 0.3,
+            minSilenceDuration: 0.15,
+            clusteringThreshold: 0.75
+        )
+        let result = pipeline.diarize(audio: audio, sampleRate: 16000, config: config)
 
         // Build label mapping: numeric speaker ID → "Speaker A/B/C..."
         var speakerIDToLabel: [Int: String] = [:]

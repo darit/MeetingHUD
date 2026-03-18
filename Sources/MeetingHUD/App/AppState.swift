@@ -41,6 +41,9 @@ final class AppState {
     var showDebugLog = false
     var showHistorySheet = false
 
+    /// When true, mic audio is muted (not fed to transcription/diarization).
+    var isMicMuted = false
+
     // MARK: - Model Loading
 
     var isModelLoading = false
@@ -548,6 +551,13 @@ final class AppState {
         speakers = []
         recommendations = []
         recordingError = nil
+    }
+
+    /// Toggle mic mute — when muted, audio is not transcribed or accumulated.
+    func toggleMute() {
+        isMicMuted.toggle()
+        activeTranscriptionEngine.isMuted = isMicMuted
+        addDebug(isMicMuted ? "Mic muted" : "Mic unmuted")
     }
 
     /// Rename a speaker. Works from either the Speakers column or the Live Feed.

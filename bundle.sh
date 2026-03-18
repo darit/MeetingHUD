@@ -34,8 +34,9 @@ if [ ! -f "$BINARY" ]; then
     exit 1
 fi
 
-# Kill any running instance
-pkill -x MeetingHUD 2>/dev/null && sleep 0.5 || true
+# Kill any running instance (try graceful quit first, then force)
+pkill -x MeetingHUD 2>/dev/null && sleep 0.3 || true
+pkill -9 -x MeetingHUD 2>/dev/null && sleep 0.2 || true
 
 # Create .app bundle
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"

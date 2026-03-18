@@ -35,6 +35,9 @@ final class TranscriptionEngine: @unchecked Sendable, TranscriptionProvider {
     /// - nil or specific code: use that language for all chunks.
     var language: String? = nil
 
+    /// When true, incoming audio is ignored (not transcribed or accumulated).
+    var isMuted = false
+
     /// Whether language has been auto-detected for this session.
     private var languageDetected = false
 
@@ -145,6 +148,7 @@ final class TranscriptionEngine: @unchecked Sendable, TranscriptionProvider {
 
         for await samples in audioStream {
             guard isTranscribing else { break }
+            guard !isMuted else { continue }
 
             sampleAccumulator.append(contentsOf: samples)
             accumulatedAudio.append(contentsOf: samples)

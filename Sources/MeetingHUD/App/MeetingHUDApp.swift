@@ -59,10 +59,22 @@ struct MenuBarView: View {
     let sharedModelContainer: ModelContainer
     @Binding var didSetup: Bool
 
+    private var llmStatusLabel: String {
+        switch appState.selectedAnalysisProvider {
+        case .localMLX:
+            if let model = MLXModelManager.shared.selectedModel {
+                return model.name
+            }
+            return "Local (MLX)"
+        case .claudeHaiku: return "Claude Haiku"
+        case .claudeSonnet: return "Claude Sonnet"
+        }
+    }
+
     var body: some View {
         Group {
-            Button("Show Overlay") {
-                showOverlay()
+            Button(appState.overlayPanel?.isVisible == true ? "Hide Overlay" : "Show Overlay") {
+                toggleOverlay()
             }
             .keyboardShortcut("o", modifiers: [.command, .shift])
 
@@ -129,6 +141,10 @@ struct MenuBarView: View {
                 }
             }
 
+            Button(appState.isMicMuted ? "Unmute Mic" : "Mute Mic") {
+                appState.toggleMute()
+            }
+
             Toggle("Auto-Detect Meetings", isOn: $appState.autoDetectEnabled)
 
             Divider()
@@ -153,7 +169,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            Menu("LLM: \(appState.selectedAnalysisProvider.rawValue)") {
+            Menu("LLM: \(llmStatusLabel)") {
                 ForEach(AppState.AnalysisProvider.allCases, id: \.self) { provider in
                     Button {
                         appState.switchAnalysisProvider(to: provider)
@@ -162,6 +178,29 @@ struct MenuBarView: View {
                             Text(provider.rawValue)
                             if provider == appState.selectedAnalysisProvider {
                                 Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+
+                if appState.selectedAnalysisProvider == .localMLX {
+                    Divider()
+                    let models = MLXModelManager.shared.availableModels
+                    if models.isEmpty {
+                        Text("No models found").font(.caption2)
+                    } else {
+                        ForEach(models) { model in
+                            Button {
+                                Task {
+                                    try? await MLXModelManager.shared.loadModel(model)
+                                }
+                            } label: {
+                                HStack {
+                                    Text("\(model.name) (\(MLXModelManager.formatBytes(model.sizeOnDisk)))")
+                                    if model == MLXModelManager.shared.selectedModel {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
                             }
                         }
                     }
@@ -248,6 +287,14 @@ struct MenuBarView: View {
         appState.configure(modelContainer: sharedModelContainer)
         appState.setup()
         showOverlay()
+    }
+
+    private func toggleOverlay() {
+        if let panel = appState.overlayPanel, panel.isVisible {
+            panel.orderOut(nil)
+        } else {
+            showOverlay()
+        }
     }
 
     private func showOverlay() {

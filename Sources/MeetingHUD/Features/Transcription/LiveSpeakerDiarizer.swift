@@ -99,7 +99,15 @@ actor LiveSpeakerDiarizer {
             guard let pipeline else { return }
 
             let startTime = Date()
-            let result = pipeline.diarize(audio: audio, sampleRate: 16000, config: .default)
+            // Lower onset for better speaker change sensitivity, especially on mic audio
+            let config = DiarizationConfig(
+                onset: 0.4,
+                offset: 0.25,
+                minSpeechDuration: 0.3,
+                minSilenceDuration: 0.15,
+                clusteringThreshold: 0.75
+            )
+            let result = pipeline.diarize(audio: audio, sampleRate: 16000, config: config)
             let elapsed = Date().timeIntervalSince(startTime)
 
             // Collect unique speaker IDs in order of first appearance
