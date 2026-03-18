@@ -9,6 +9,8 @@ struct MeetingHistorySheet: View {
     @Query(sort: \Interlocutor.lastSeen, order: .reverse) private var interlocutors: [Interlocutor]
     @State private var selected: Meeting?
     @State private var meetingToDelete: Meeting?
+    @State private var speakerToDelete: Interlocutor?
+    @State private var showDeleteAllSpeakers = false
     @State private var showSpeakers = false
 
     var body: some View {
@@ -53,15 +55,34 @@ struct MeetingHistorySheet: View {
 
             // Right: detail
             if showSpeakers {
-                VStack {
+                VStack(spacing: 12) {
                     Image(systemName: "person.2")
                         .font(.largeTitle)
                         .foregroundStyle(.tertiary)
                     Text("\(interlocutors.count) speaker\(interlocutors.count == 1 ? "" : "s") saved")
                         .foregroundStyle(.secondary)
-                    Text("Right-click to delete")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                    if !interlocutors.isEmpty {
+                        Text("Right-click or swipe to delete")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(interlocutors.prefix(10)) { speaker in
+                                HStack(spacing: 8) {
+                                    Image(systemName: speaker.voiceEmbeddings.isEmpty ? "person.crop.circle" : "person.crop.circle.badge.checkmark")
+                                        .foregroundStyle(speaker.voiceEmbeddings.isEmpty ? Color.secondary : Color.green)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(speaker.name)
+                                            .font(.system(size: 12, weight: .medium))
+                                        Text("\(speaker.participations.count) meetings · \(speaker.voiceEmbeddings.count) voice samples")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.top, 8)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let meeting = selected {
@@ -96,6 +117,33 @@ struct MeetingHistorySheet: View {
             }
         } message: {
             Text("This will permanently delete this meeting and its transcript.")
+        }
+        .alert("Delete Speaker?", isPresented: Binding(
+            get: { speakerToDelete != nil },
+            set: { if !$0 { speakerToDelete = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { speakerToDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let speaker = speakerToDelete {
+                    deleteSpeaker(speaker)
+                    speakerToDelete = nil
+                }
+            }
+        } message: {
+            if let speaker = speakerToDelete {
+                Text("Delete \(speaker.name) and their \(speaker.voiceEmbeddings.count) voice samples?")
+            }
+        }
+        .alert("Delete All Speakers?", isPresented: $showDeleteAllSpeakers) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete All", role: .destructive) {
+                for speaker in interlocutors {
+                    modelContext.delete(speaker)
+                }
+                try? modelContext.save()
+            }
+        } message: {
+            Text("This will delete all \(interlocutors.count) speakers and their voice profiles.")
         }
     }
 
@@ -143,22 +191,31 @@ struct MeetingHistorySheet: View {
             )
             .frame(maxHeight: .infinity)
         } else {
-            List {
-                ForEach(interlocutors) { speaker in
-                    SpeakerListRow(speaker: speaker, meetingCount: speaker.participations.count)
-                        .contextMenu {
-                            Button("Delete", role: .destructive) {
-                                deleteSpeaker(speaker)
+            VStack(spacing: 0) {
+                List {
+                    ForEach(interlocutors) { speaker in
+                        SpeakerListRow(speaker: speaker, meetingCount: speaker.participations.count)
+                            .contextMenu {
+                                Button("Delete", role: .destructive) {
+                                    speakerToDelete = speaker
+                                }
                             }
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button("Delete", role: .destructive) {
-                                deleteSpeaker(speaker)
+                            .swipeActions(edge: .trailing) {
+                                Button("Delete", role: .destructive) {
+                                    speakerToDelete = speaker
+                                }
                             }
-                        }
+                    }
                 }
+                .listStyle(.sidebar)
+
+                Divider()
+                Button("Delete All Speakers", role: .destructive) {
+                    showDeleteAllSpeakers = true
+                }
+                .font(.caption)
+                .padding(8)
             }
-            .listStyle(.sidebar)
         }
     }
 
