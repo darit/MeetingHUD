@@ -398,11 +398,21 @@ private struct OverlayToolbar: View {
 
             Spacer()
 
-            // Segment count
-            if !appState.activeTranscriptSegments.isEmpty {
-                Text("\(appState.activeTranscriptSegments.count) segments")
-                    .font(.system(size: 9))
+            // Metrics
+            HStack(spacing: 6) {
+                if !appState.activeTranscriptSegments.isEmpty {
+                    Text("\(appState.activeTranscriptSegments.count) segs")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                }
+                Text(appState.metricsTracker.memoryString)
+                    .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.tertiary)
+                if appState.metricsTracker.claudeCallCount > 0 {
+                    Text("\(appState.metricsTracker.claudeCallCount) API · ~\(appState.metricsTracker.claudeTokensEstimate / 1000)K tok")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
             }
 
             // Language badge (clickable: cycles auto → en → es)

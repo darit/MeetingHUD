@@ -173,14 +173,21 @@ final class AppState {
             activeProvider = nil // falls back to mlxProvider
         case .claudeHaiku:
             if claudeHaikuProvider == nil {
-                claudeHaikuProvider = ClaudeCLIProvider(model: .haiku)
+                let p = ClaudeCLIProvider(model: .haiku)
+                p.onCallComplete = { [weak self] input, output in
+                    self?.metricsTracker.recordClaudeCall(inputChars: input, outputChars: output)
+                }
+                claudeHaikuProvider = p
             }
             activeProvider = claudeHaikuProvider
-            // Unload MLX model to free GPU memory
             MLXModelManager.shared.unloadModel()
         case .claudeSonnet:
             if claudeSonnetProvider == nil {
-                claudeSonnetProvider = ClaudeCLIProvider(model: .sonnet)
+                let p = ClaudeCLIProvider(model: .sonnet)
+                p.onCallComplete = { [weak self] input, output in
+                    self?.metricsTracker.recordClaudeCall(inputChars: input, outputChars: output)
+                }
+                claudeSonnetProvider = p
             }
             activeProvider = claudeSonnetProvider
             MLXModelManager.shared.unloadModel()
@@ -277,6 +284,7 @@ final class AppState {
     let realTimeSpeakerDetector = RealTimeSpeakerDetector()
     let alwaysOnCapture = AlwaysOnCaptureManager()
     let mlxProvider = MLXProvider()
+    let metricsTracker = MetricsTracker()
     private let sharedAnalysisQueue = AnalysisQueue()
     private(set) var voiceInputManager: VoiceInputManager!
     private(set) var memoryManager: MemoryManager!
@@ -321,6 +329,8 @@ final class AppState {
     // MARK: - Initialization
 
     func setup() {
+        metricsTracker.start()
+
         // Sync settings from UserDefaults (written by SettingsView @AppStorage)
         autoDetectEnabled = UserDefaults.standard.object(forKey: "autoDetectMeetings") as? Bool ?? true
         transcriptionEngine.modelName = UserDefaults.standard.string(forKey: "whisperModel")
@@ -930,6 +940,14 @@ final class AppState {
         let segments = activeTranscriptSegments
 
         guard !segments.isEmpty else { return }
+
+        // Don't persist non-meeting content (news, podcasts, streams, etc.)
+        let nonMeetingTypes: Set<ContentTypeClassifier.ContentType> = [.news, .podcast, .stream, .lecture]
+        if nonMeetingTypes.contains(detectedContentType) {
+            addDebug("Skipping save — content type is \(detectedContentType.rawValue), not a meeting")
+            activeTranscriptionEngine.clearAccumulatedAudio()
+            return
+        }
 
         // Post-meeting diarization: only run if live diarization found just 1 speaker
         // (might detect more with full audio context). Skip if already multi-speaker.

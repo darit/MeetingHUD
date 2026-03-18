@@ -14,6 +14,8 @@ final class ClaudeCLIProvider: LLMProvider, @unchecked Sendable {
     }
 
     let model: Model
+    /// Callback to record API usage metrics.
+    var onCallComplete: ((Int, Int) -> Void)?
 
     init(model: Model = .haiku) {
         self.model = model
@@ -55,6 +57,8 @@ final class ClaudeCLIProvider: LLMProvider, @unchecked Sendable {
 
     func stream(messages: [ChatMessage]) async throws -> AsyncStream<String> {
         let prompt = Self.formatPrompt(messages: messages)
+        let inputChars = prompt.count
+        let onCall = self.onCallComplete
 
         guard let claudePath = Self.resolvedClaudePath() else {
             return AsyncStream { continuation in
@@ -94,14 +98,21 @@ final class ClaudeCLIProvider: LLMProvider, @unchecked Sendable {
                     // Read stdout in chunks
                     let handle = outputPipe.fileHandleForReading
                     var data = handle.readData(ofLength: 4096)
+                    var outputChars = 0
                     while !data.isEmpty {
                         if let chunk = String(data: data, encoding: .utf8) {
                             continuation.yield(chunk)
+                            outputChars += chunk.count
                         }
                         data = handle.readData(ofLength: 4096)
                     }
 
                     process.waitUntilExit()
+
+                    // Record usage metrics
+                    await MainActor.run {
+                        onCall?(inputChars, outputChars)
+                    }
 
                     if process.terminationStatus != 0 && process.terminationStatus != 15 {
                         let errData = errorPipe.fileHandleForReading.readDataToEndOfFile()
