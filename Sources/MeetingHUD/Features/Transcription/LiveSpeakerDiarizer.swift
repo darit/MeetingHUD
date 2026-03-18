@@ -14,6 +14,7 @@ actor LiveSpeakerDiarizer {
     private let minAudioDuration: TimeInterval = 8.0
 
     private var pipeline: PyannoteDiarizationPipeline?
+    private var sortformer: SortformerDiarizer?
     private var isRunning = false
     private var timerTask: Task<Void, Never>?
     private var runCount = 0
@@ -138,15 +139,13 @@ actor LiveSpeakerDiarizer {
 
     private func runPyannoteDiarization(audio: [Float], segments: [TranscriptSegment], duration: Double) async {
         do {
-            if pipeline == nil {
-                log("Loading Pyannote pipeline...")
-                pipeline = try await PyannoteDiarizationPipeline.fromPretrained(
-                    embeddingEngine: .coreml,
-                    useVADFilter: true
-                )
-                log("Pyannote pipeline loaded")
+            // Use Sortformer (CoreML, Neural Engine, 120x real-time) instead of Pyannote
+            if sortformer == nil {
+                log("Loading Sortformer diarizer (CoreML)...")
+                sortformer = try await SortformerDiarizer.fromPretrained()
+                log("Sortformer loaded")
             }
-            guard let pipeline else { return }
+            guard let sortformer else { return }
 
             let startTime = Date()
             let config = DiarizationConfig(
@@ -156,21 +155,8 @@ actor LiveSpeakerDiarizer {
                 minSilenceDuration: 0.15,
                 clusteringThreshold: 1.0
             )
-
-            let capturedPipeline = pipeline
-            let result: DiarizationResult
-            if let queue = analysisQueue {
-                result = await withCheckedContinuation { continuation in
-                    Task {
-                        await queue.enqueue {
-                            let r = capturedPipeline.diarize(audio: audio, sampleRate: 16000, config: config)
-                            continuation.resume(returning: r)
-                        }
-                    }
-                }
-            } else {
-                result = pipeline.diarize(audio: audio, sampleRate: 16000, config: config)
-            }
+            sortformer.resetState()
+            let result = sortformer.diarize(audio: audio, sampleRate: 16000, config: config)
             let elapsed = Date().timeIntervalSince(startTime)
 
             var seenIDs: [Int] = []

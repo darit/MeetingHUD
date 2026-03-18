@@ -96,11 +96,13 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         chunkCount = 0
 
         var sampleAccumulator: [Float] = []
-        let chunkSampleCount = Constants.Audio.sampleRate * 3 // 3s chunks (was 5s — faster turnaround)
+        let chunkSampleCount = Constants.Audio.sampleRate * 5 // 5s chunks for better language detection
         var chunkIndex = 0
+        var bufferCount = 0
 
         for await samples in audioStream {
             guard isTranscribing else { break }
+            bufferCount += 1
             sampleAccumulator.append(contentsOf: samples)
             accumulatedAudio.append(contentsOf: samples)
 
@@ -108,7 +110,7 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
                 let chunk = Array(sampleAccumulator.prefix(chunkSampleCount))
                 sampleAccumulator.removeFirst(chunkSampleCount)
 
-                let chunkOffset = TimeInterval(chunkIndex) * 3.0
+                let chunkOffset = TimeInterval(chunkIndex) * 5.0
                 processChunk(chunk, offset: chunkOffset)
                 chunkIndex += 1
             }
@@ -116,9 +118,11 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
 
         // Process remaining audio
         if !sampleAccumulator.isEmpty && isTranscribing {
-            let chunkOffset = TimeInterval(chunkIndex) * 3.0
+            let chunkOffset = TimeInterval(chunkIndex) * 5.0
             processChunk(sampleAccumulator, offset: chunkOffset)
         }
+
+        print("[ParakeetEngine] Session ended: \(bufferCount) buffers received, \(chunkIndex) chunks processed, \(accumulatedAudio.count / 16000)s total audio")
 
         isTranscribing = false
     }
