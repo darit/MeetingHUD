@@ -893,7 +893,7 @@ private struct TranscriptColumn: View {
                             Text("Transcribing audio…")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text("First results appear after ~15s")
+                            Text("First results appear after ~8s")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.tertiary)
                         } else {

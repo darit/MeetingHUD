@@ -96,10 +96,9 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         chunkCount = 0
 
         var sampleAccumulator: [Float] = []
-        // 15s chunks — Parakeet TDT works best with longer context for language
-        // detection + auto-punctuation (can handle up to 24min in one pass).
-        // Output is split into sentences for finer-grained speaker assignment.
-        let chunkSampleCount = Constants.Audio.sampleRate * 15
+        // 8s chunks — sweet spot for language detection + punctuation accuracy
+        // without excessive latency. Output split into sentences for diarization.
+        let chunkSampleCount = Constants.Audio.sampleRate * 8
         var chunkIndex = 0
         var bufferCount = 0
 
@@ -113,7 +112,7 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
                 let chunk = Array(sampleAccumulator.prefix(chunkSampleCount))
                 sampleAccumulator.removeFirst(chunkSampleCount)
 
-                let chunkOffset = TimeInterval(chunkIndex) * 15.0
+                let chunkOffset = TimeInterval(chunkIndex) * 8.0
                 processChunk(chunk, offset: chunkOffset)
                 chunkIndex += 1
             }
