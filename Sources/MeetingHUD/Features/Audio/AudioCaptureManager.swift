@@ -364,6 +364,18 @@ final class AudioCaptureManager: @unchecked Sendable {
         }
 
         let engine = AVAudioEngine()
+
+        // Enable Apple's built-in voice processing on the mic input.
+        // This activates Acoustic Echo Cancellation (AEC) + noise suppression +
+        // automatic gain control — strips speaker output from the mic signal so
+        // we don't double-capture system audio.
+        do {
+            try engine.inputNode.setVoiceProcessingEnabled(true)
+            print("[AudioCapture] Voice processing (AEC) enabled on mic")
+        } catch {
+            print("[AudioCapture] Voice processing unavailable: \(error)")
+        }
+
         let continuation = self.streamContinuation
         let levelPtr = self._micLevelStorage
         let inputFormat = engine.inputNode.outputFormat(forBus: 0)
