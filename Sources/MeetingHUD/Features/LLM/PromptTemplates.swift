@@ -83,10 +83,13 @@ enum PromptTemplates {
         - Action items with owners
         - Any unresolved concerns or risks
 
-        IMPORTANT: Use the same language as the transcript. If they speak Spanish, \
+        IMPORTANT RULES:
+        - Use the same language as the transcript. If they speak Spanish, \
         write the summary in Spanish. If English, use English.
-
-        Be concise but complete. Use bullet points. Keep to 200 words or fewer.
+        - ONLY state facts explicitly mentioned in the transcript. \
+        NEVER infer, guess, or add information not present. \
+        If a detail is unclear, omit it rather than guessing.
+        - Be concise but complete. Use bullet points. Keep to 200 words or fewer.
         """
 
     /// Build a user message for meeting summary generation.

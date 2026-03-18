@@ -429,7 +429,7 @@ private struct MeetingDetailView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
 
-                    TextField("Ask about this meeting…", text: $chatText)
+                    TextField("Ask about this meeting… (\(appState.analysisLLMProvider.displayName))", text: $chatText)
                         .font(.system(size: 12))
                         .textFieldStyle(.plain)
                         .onSubmit { sendQuestion() }
@@ -545,9 +545,10 @@ private struct MeetingDetailView: View {
             parts.append("Participants:\n\(pLines.joined(separator: "\n"))")
         }
         if !segments.isEmpty {
-            let transcript = segments.suffix(80).map { "[\($0.speakerLabel)] (\(formatTime($0.startTime))): \($0.text)" }
+            let maxSegments = min(segments.count, 200) // keep within context limits
+            let transcript = segments.suffix(maxSegments).map { "[\($0.speakerLabel)] (\(formatTime($0.startTime))): \($0.text)" }
                 .joined(separator: "\n")
-            parts.append("Transcript (excerpt):\n\(transcript)")
+            parts.append("Transcript:\n\(transcript)")
         }
         return parts.joined(separator: "\n\n")
     }
