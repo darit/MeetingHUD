@@ -176,11 +176,14 @@ final class AppState {
                 claudeHaikuProvider = ClaudeCLIProvider(model: .haiku)
             }
             activeProvider = claudeHaikuProvider
+            // Unload MLX model to free GPU memory
+            MLXModelManager.shared.unloadModel()
         case .claudeSonnet:
             if claudeSonnetProvider == nil {
                 claudeSonnetProvider = ClaudeCLIProvider(model: .sonnet)
             }
             activeProvider = claudeSonnetProvider
+            MLXModelManager.shared.unloadModel()
         }
         UserDefaults.standard.set(choice.rawValue, forKey: "analysisProvider")
         addDebug("Switched analysis provider to \(choice.rawValue)")

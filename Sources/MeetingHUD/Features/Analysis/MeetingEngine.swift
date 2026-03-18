@@ -257,7 +257,10 @@ final class MeetingEngine {
 
     private func runAnalysisPass() async {
         let isAvailable = await llmProvider.isAvailable
-        guard isAvailable else { return }
+        guard isAvailable else {
+            print("[MeetingEngine] Analysis skipped — LLM not available (\(llmProvider.displayName))")
+            return
+        }
         guard let segments = segmentsProvider?(), !segments.isEmpty else { return }
 
         // Sentiment analysis on new segments
@@ -295,10 +298,11 @@ final class MeetingEngine {
             let windowStart = max(0, segments.count - 40)
             let window = Array(segments[windowStart...])
             let existingNames = topics.map(\.name)
+            let topicWatermarkCapture = topicWatermark
             topicWatermark = segments.count
 
             let agenda = meetingAgenda
-            await analysisQueue.enqueue { [weak self, window, existingNames, agenda] in
+            await analysisQueue.enqueue { [weak self, window, existingNames, agenda, topicWatermarkCapture] in
                 guard let self else { return }
                 do {
                     let newTopics = try await self.topicExtractor.extract(
@@ -312,6 +316,9 @@ final class MeetingEngine {
                     }
                 } catch {
                     print("[MeetingEngine] Topic extraction failed: \(error)")
+                    await MainActor.run {
+                        self.topicWatermark = topicWatermarkCapture
+                    }
                 }
             }
         }
@@ -320,9 +327,10 @@ final class MeetingEngine {
         if signalWatermark < segments.count {
             let windowStart = max(0, segments.count - 40)
             let window = Array(segments[windowStart...])
+            let signalWatermarkCapture = signalWatermark
             signalWatermark = segments.count
 
-            await analysisQueue.enqueue { [weak self, window] in
+            await analysisQueue.enqueue { [weak self, window, signalWatermarkCapture] in
                 guard let self else { return }
                 do {
                     let result = try await self.signalDetector.detect(
@@ -334,6 +342,9 @@ final class MeetingEngine {
                     }
                 } catch {
                     print("[MeetingEngine] Signal detection failed: \(error)")
+                    await MainActor.run {
+                        self.signalWatermark = signalWatermarkCapture
+                    }
                 }
             }
         }
