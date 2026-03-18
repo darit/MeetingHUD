@@ -21,7 +21,8 @@ final class SpeakerDiarizer: Sendable {
     /// to the existing transcript segments.
     func diarize(
         audio: [Float],
-        segments: [TranscriptSegment]
+        segments: [TranscriptSegment],
+        analysisQueue: AnalysisQueue? = nil
     ) async throws -> DiarizationOutput {
         let pipeline = try await PyannoteDiarizationPipeline.fromPretrained(
             embeddingEngine: .coreml
@@ -34,7 +35,21 @@ final class SpeakerDiarizer: Sendable {
             minSilenceDuration: 0.15,
             clusteringThreshold: 0.75
         )
-        let result = pipeline.diarize(audio: audio, sampleRate: 16000, config: config)
+
+        // Run through shared GPU queue to avoid Metal contention with LLM
+        let result: DiarizationResult
+        if let queue = analysisQueue {
+            result = await withCheckedContinuation { continuation in
+                Task {
+                    await queue.enqueue {
+                        let r = pipeline.diarize(audio: audio, sampleRate: 16000, config: config)
+                        continuation.resume(returning: r)
+                    }
+                }
+            }
+        } else {
+            result = pipeline.diarize(audio: audio, sampleRate: 16000, config: config)
+        }
 
         // Build label mapping: numeric speaker ID → "Speaker A/B/C..."
         var speakerIDToLabel: [Int: String] = [:]

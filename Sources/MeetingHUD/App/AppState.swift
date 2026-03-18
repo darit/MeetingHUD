@@ -534,7 +534,8 @@ final class AppState {
                 },
                 onDebugLog: { [weak self] msg in
                     self?.addDebug(msg)
-                }
+                },
+                analysisQueue: sharedAnalysisQueue
             )
             await liveSpeakerDiarizer.start()
         }
@@ -908,7 +909,7 @@ final class AppState {
         if !audio.isEmpty {
             isDiarizing = true
             do {
-                let output = try await speakerDiarizer.diarize(audio: audio, segments: segments)
+                let output = try await speakerDiarizer.diarize(audio: audio, segments: segments, analysisQueue: sharedAnalysisQueue)
                 // Apply rename map to diarized segments
                 var diarSegments = output.segments
                 for i in diarSegments.indices {

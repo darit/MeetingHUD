@@ -32,16 +32,21 @@ actor LiveSpeakerDiarizer {
     private var audioProvider: (() -> [Float])?
     private var segmentsProvider: (() -> [TranscriptSegment])?
 
+    /// Shared GPU queue — serializes diarization with LLM inference to prevent Metal crashes.
+    private var analysisQueue: AnalysisQueue?
+
     func configure(
         audioProvider: @escaping () -> [Float],
         segmentsProvider: @escaping () -> [TranscriptSegment],
         onDiarizationComplete: @escaping ([TranscriptSegment]) -> Void,
-        onDebugLog: ((String) -> Void)? = nil
+        onDebugLog: ((String) -> Void)? = nil,
+        analysisQueue: AnalysisQueue? = nil
     ) {
         self.audioProvider = audioProvider
         self.segmentsProvider = segmentsProvider
         self.onDiarizationComplete = onDiarizationComplete
         self.onDebugLog = onDebugLog
+        self.analysisQueue = analysisQueue
     }
 
     func start() {
@@ -99,7 +104,6 @@ actor LiveSpeakerDiarizer {
             guard let pipeline else { return }
 
             let startTime = Date()
-            // Lower onset for better speaker change sensitivity, especially on mic audio
             let config = DiarizationConfig(
                 onset: 0.4,
                 offset: 0.25,
@@ -107,7 +111,23 @@ actor LiveSpeakerDiarizer {
                 minSilenceDuration: 0.15,
                 clusteringThreshold: 0.75
             )
-            let result = pipeline.diarize(audio: audio, sampleRate: 16000, config: config)
+
+            // Run diarization through the shared GPU queue to prevent Metal contention
+            // with concurrent LLM inference (both use MLX on the same Metal device).
+            let capturedPipeline = pipeline
+            let result: DiarizationResult
+            if let queue = analysisQueue {
+                result = await withCheckedContinuation { continuation in
+                    Task {
+                        await queue.enqueue {
+                            let r = capturedPipeline.diarize(audio: audio, sampleRate: 16000, config: config)
+                            continuation.resume(returning: r)
+                        }
+                    }
+                }
+            } else {
+                result = pipeline.diarize(audio: audio, sampleRate: 16000, config: config)
+            }
             let elapsed = Date().timeIntervalSince(startTime)
 
             // Collect unique speaker IDs in order of first appearance
