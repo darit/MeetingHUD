@@ -160,22 +160,27 @@ struct MeetingHistorySheet: View {
             .frame(maxHeight: .infinity)
         } else {
             List(meetings, selection: $selected) { meeting in
-                MeetingListRow(meeting: meeting)
-                    .tag(meeting)
-                    .contextMenu {
-                        Button("Export & Copy") {
-                            archiveMeeting(meeting)
-                        }
-                        Divider()
-                        Button("Delete", role: .destructive) {
-                            meetingToDelete = meeting
-                        }
+                HStack {
+                    MeetingListRow(meeting: meeting)
+                    Spacer()
+                    Button {
+                        archiveMeeting(meeting)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
                     }
-                    .swipeActions(edge: .trailing) {
-                        Button("Delete", role: .destructive) {
-                            meetingToDelete = meeting
-                        }
+                    .buttonStyle(.plain)
+                    Button {
+                        meetingToDelete = meeting
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.red.opacity(0.6))
                     }
+                    .buttonStyle(.plain)
+                }
+                .tag(meeting)
             }
             .listStyle(.sidebar)
         }
@@ -194,17 +199,18 @@ struct MeetingHistorySheet: View {
             VStack(spacing: 0) {
                 List {
                     ForEach(interlocutors) { speaker in
-                        SpeakerListRow(speaker: speaker, meetingCount: speaker.participations.count)
-                            .contextMenu {
-                                Button("Delete", role: .destructive) {
-                                    speakerToDelete = speaker
-                                }
+                        HStack {
+                            SpeakerListRow(speaker: speaker, meetingCount: speaker.participations.count)
+                            Spacer()
+                            Button {
+                                speakerToDelete = speaker
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.red.opacity(0.6))
                             }
-                            .swipeActions(edge: .trailing) {
-                                Button("Delete", role: .destructive) {
-                                    speakerToDelete = speaker
-                                }
-                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
                 .listStyle(.sidebar)
