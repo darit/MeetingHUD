@@ -6,17 +6,29 @@ struct MeetingHistorySheet: View {
     @Bindable var appState: AppState
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Meeting.date, order: .reverse) private var meetings: [Meeting]
+    @Query(sort: \Interlocutor.lastSeen, order: .reverse) private var interlocutors: [Interlocutor]
     @State private var selected: Meeting?
     @State private var meetingToDelete: Meeting?
+    @State private var showSpeakers = false
 
     var body: some View {
         HSplitView {
-            // Left: meeting list
+            // Left: meeting/speaker list
             VStack(spacing: 0) {
                 HStack {
-                    Text("Past Meetings")
+                    Text(showSpeakers ? "Speakers" : "Past Meetings")
                         .font(.headline)
                     Spacer()
+                    Button {
+                        showSpeakers.toggle()
+                        if showSpeakers { selected = nil }
+                    } label: {
+                        Image(systemName: showSpeakers ? "calendar" : "person.2")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(showSpeakers ? "Show meetings" : "Show speakers")
                     Button {
                         appState.showHistorySheet = false
                     } label: {
@@ -31,35 +43,28 @@ struct MeetingHistorySheet: View {
 
                 Divider()
 
-                if meetings.isEmpty {
-                    ContentUnavailableView(
-                        "No meetings yet",
-                        systemImage: "calendar.badge.clock",
-                        description: Text("Meetings will appear here after you record and stop them.")
-                    )
-                    .frame(maxHeight: .infinity)
+                if showSpeakers {
+                    speakerListView
                 } else {
-                    List(meetings, selection: $selected) { meeting in
-                        MeetingListRow(meeting: meeting)
-                            .tag(meeting)
-                            .contextMenu {
-                                Button("Delete", role: .destructive) {
-                                    meetingToDelete = meeting
-                                }
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button("Delete", role: .destructive) {
-                                    meetingToDelete = meeting
-                                }
-                            }
-                    }
-                    .listStyle(.sidebar)
+                    meetingListView
                 }
             }
             .frame(minWidth: 220, maxWidth: 280)
 
-            // Right: detail + Q&A
-            if let meeting = selected {
+            // Right: detail
+            if showSpeakers {
+                VStack {
+                    Image(systemName: "person.2")
+                        .font(.largeTitle)
+                        .foregroundStyle(.tertiary)
+                    Text("\(interlocutors.count) speaker\(interlocutors.count == 1 ? "" : "s") saved")
+                        .foregroundStyle(.secondary)
+                    Text("Right-click to delete")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let meeting = selected {
                 MeetingDetailView(meeting: meeting, appState: appState)
             } else {
                 VStack {
@@ -74,7 +79,7 @@ struct MeetingHistorySheet: View {
         }
         .frame(minWidth: 700, minHeight: 500)
         .onAppear {
-            selected = meetings.first
+            if !showSpeakers { selected = meetings.first }
         }
         .alert("Delete Meeting?", isPresented: Binding(
             get: { meetingToDelete != nil },
@@ -92,6 +97,136 @@ struct MeetingHistorySheet: View {
         } message: {
             Text("This will permanently delete this meeting and its transcript.")
         }
+    }
+
+    // MARK: - List Views
+
+    @ViewBuilder
+    private var meetingListView: some View {
+        if meetings.isEmpty {
+            ContentUnavailableView(
+                "No meetings yet",
+                systemImage: "calendar.badge.clock",
+                description: Text("Meetings will appear here after you record and stop them.")
+            )
+            .frame(maxHeight: .infinity)
+        } else {
+            List(meetings, selection: $selected) { meeting in
+                MeetingListRow(meeting: meeting)
+                    .tag(meeting)
+                    .contextMenu {
+                        Button("Export & Copy") {
+                            archiveMeeting(meeting)
+                        }
+                        Divider()
+                        Button("Delete", role: .destructive) {
+                            meetingToDelete = meeting
+                        }
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button("Delete", role: .destructive) {
+                            meetingToDelete = meeting
+                        }
+                    }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    @ViewBuilder
+    private var speakerListView: some View {
+        if interlocutors.isEmpty {
+            ContentUnavailableView(
+                "No speakers yet",
+                systemImage: "person.2",
+                description: Text("Speakers will appear after you name them in a meeting.")
+            )
+            .frame(maxHeight: .infinity)
+        } else {
+            List {
+                ForEach(interlocutors) { speaker in
+                    SpeakerListRow(speaker: speaker, meetingCount: speaker.participations.count)
+                        .contextMenu {
+                            Button("Delete", role: .destructive) {
+                                deleteSpeaker(speaker)
+                            }
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button("Delete", role: .destructive) {
+                                deleteSpeaker(speaker)
+                            }
+                        }
+                }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    private func archiveMeeting(_ meeting: Meeting) {
+        let segments: [TranscriptSegment]
+        if let data = meeting.compressedTranscript,
+           let decompressed = try? (data as NSData).decompressed(using: .zlib) as Data {
+            segments = (try? JSONDecoder().decode([TranscriptSegment].self, from: decompressed)) ?? []
+        } else {
+            segments = []
+        }
+
+        let markdown = MeetingExporter.exportMarkdown(
+            title: meeting.title,
+            date: meeting.date,
+            segments: segments,
+            speakers: meeting.participations
+                .compactMap { $0.interlocutor }
+                .map { SpeakerInfo(id: $0.id, name: $0.name) },
+            topics: meeting.topics.sorted { $0.startTime < $1.startTime }
+                .map { TopicInfo(name: $0.name, startTime: $0.startTime, summary: $0.summary) },
+            actionItems: meeting.actionItems.map {
+                SignalDetector.DetectedAction(
+                    description: $0.desc,
+                    ownerLabel: $0.owner?.name ?? "",
+                    extractedFrom: $0.extractedFrom
+                )
+            },
+            summary: meeting.summary.isEmpty ? nil : meeting.summary
+        )
+        MeetingExporter.copyToClipboard(markdown)
+    }
+
+    private func deleteSpeaker(_ speaker: Interlocutor) {
+        modelContext.delete(speaker)
+        try? modelContext.save()
+    }
+}
+
+// MARK: - Speaker List Row
+
+private struct SpeakerListRow: View {
+    let speaker: Interlocutor
+    let meetingCount: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(speaker.name)
+                .font(.system(size: 12, weight: .medium))
+            HStack(spacing: 6) {
+                if meetingCount > 0 {
+                    Text("\(meetingCount) meeting\(meetingCount == 1 ? "" : "s")")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                if !speaker.role.isEmpty {
+                    Text("· \(speaker.role)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                if !speaker.voiceEmbeddings.isEmpty {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.teal)
+                }
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 
