@@ -41,7 +41,7 @@ final class AppState {
     var showDebugLog = false
     var showHistorySheet = false
 
-    /// When true, mic audio is muted (not fed to transcription/diarization).
+    /// When true, audio processing is paused (not fed to transcription/diarization).
     var isMicMuted = false
 
     // MARK: - Model Loading

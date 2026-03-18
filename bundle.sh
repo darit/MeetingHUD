@@ -42,6 +42,7 @@ pkill -9 -x MeetingHUD 2>/dev/null && sleep 0.2 || true
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/MeetingHUD"
 cp "$SCRIPT_DIR/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+cp "$SCRIPT_DIR/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 
 # Copy MLX Metal library and any other .bundle resources from the build
 PRODUCTS_DIR="$BUILD_DIR/Build/Products/Debug"
