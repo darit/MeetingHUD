@@ -1,5 +1,14 @@
+import KeyboardShortcuts
 import SwiftUI
 import SwiftData
+
+// MARK: - Global Hotkeys
+
+extension KeyboardShortcuts.Name {
+    static let toggleOverlay = Self("toggleOverlay", default: .init(.h, modifiers: [.control, .option]))
+    static let toggleMute = Self("toggleMute", default: .init(.m, modifiers: [.control, .option]))
+    static let toggleRecording = Self("toggleRecording", default: .init(.r, modifiers: [.control, .option]))
+}
 
 /// Main entry point for MeetingHUD.
 /// Provides a menu bar presence and a floating overlay window.
@@ -287,6 +296,21 @@ struct MenuBarView: View {
         appState.configure(modelContainer: sharedModelContainer)
         appState.setup()
         showOverlay()
+
+        // Global hotkeys — work even when app is in background / behind notch
+        KeyboardShortcuts.onKeyUp(for: .toggleOverlay) { [self] in
+            toggleOverlay()
+        }
+        KeyboardShortcuts.onKeyUp(for: .toggleMute) { [self] in
+            appState.toggleMute()
+        }
+        KeyboardShortcuts.onKeyUp(for: .toggleRecording) { [self] in
+            if appState.isRecording {
+                appState.stopRecording()
+            } else {
+                appState.startRecording()
+            }
+        }
     }
 
     private func toggleOverlay() {
