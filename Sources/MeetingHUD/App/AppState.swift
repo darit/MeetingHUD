@@ -928,10 +928,13 @@ final class AppState {
 
         guard !segments.isEmpty else { return }
 
-        // Try SpeakerKit diarization for final refinement
+        // Post-meeting diarization: only run if live diarization found just 1 speaker
+        // (might detect more with full audio context). Skip if already multi-speaker.
+        let uniqueSpeakers = Set(segments.map(\.speakerLabel)).count
         var finalSegments = segments
-        if !audio.isEmpty {
+        if !audio.isEmpty && uniqueSpeakers <= 1 {
             isDiarizing = true
+            addDebug("Post-meeting diarization on \(Int(Double(audio.count) / 16000))s audio...")
             do {
                 let diarQueue = selectedAnalysisProvider == .localMLX ? sharedAnalysisQueue : nil
                 let output = try await speakerDiarizer.diarize(audio: audio, segments: segments, analysisQueue: diarQueue)
