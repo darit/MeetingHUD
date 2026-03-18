@@ -501,6 +501,9 @@ final class AppState {
                 audioProvider: { [weak self] in
                     self?.activeTranscriptionEngine.accumulatedAudio ?? []
                 },
+                stereoAudioProvider: { [weak self] in
+                    self?.audioCaptureManager.accumulatedStereoAudio ?? []
+                },
                 segmentsProvider: { [weak self] in
                     self?.activeTranscriptSegments ?? []
                 },

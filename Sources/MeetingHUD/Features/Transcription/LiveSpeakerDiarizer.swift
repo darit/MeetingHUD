@@ -30,19 +30,25 @@ actor LiveSpeakerDiarizer {
     private var onDiarizationComplete: (([TranscriptSegment]) -> Void)?
     private var onDebugLog: ((String) -> Void)?
     private var audioProvider: (() -> [Float])?
+    private var stereoAudioProvider: (() -> [Float])?
     private var segmentsProvider: (() -> [TranscriptSegment])?
 
     /// Shared GPU queue — serializes diarization with LLM inference to prevent Metal crashes.
     private var analysisQueue: AnalysisQueue?
 
+    /// Stereo-aware diarizer (used when stereo audio is available).
+    private var stereoDiarizer = StereoSpeakerDiarizer()
+
     func configure(
         audioProvider: @escaping () -> [Float],
+        stereoAudioProvider: (() -> [Float])? = nil,
         segmentsProvider: @escaping () -> [TranscriptSegment],
         onDiarizationComplete: @escaping ([TranscriptSegment]) -> Void,
         onDebugLog: ((String) -> Void)? = nil,
         analysisQueue: AnalysisQueue? = nil
     ) {
         self.audioProvider = audioProvider
+        self.stereoAudioProvider = stereoAudioProvider
         self.segmentsProvider = segmentsProvider
         self.onDiarizationComplete = onDiarizationComplete
         self.onDebugLog = onDebugLog
@@ -93,23 +99,63 @@ actor LiveSpeakerDiarizer {
         defer { isProcessing = false }
         runCount += 1
 
+        // Try stereo diarization first (better speaker separation)
+        let stereoAudio = stereoAudioProvider?() ?? []
+        if stereoAudio.count >= 2 * Int(minAudioDuration) * 16000 {
+            await runStereoDiarization(stereoAudio: stereoAudio, monoAudio: audio, segments: segments, duration: duration)
+            return
+        }
+
+        // Fall back to Pyannote pipeline (mono)
+        await runPyannoteDiarization(audio: audio, segments: segments, duration: duration)
+    }
+
+    private func runStereoDiarization(stereoAudio: [Float], monoAudio: [Float], segments: [TranscriptSegment], duration: Double) async {
+        do {
+            try await stereoDiarizer.loadModels()
+        } catch {
+            log("Stereo diarizer load failed: \(error.localizedDescription), falling back to Pyannote")
+            await runPyannoteDiarization(audio: monoAudio, segments: segments, duration: duration)
+            return
+        }
+
+        let startTime = Date()
+        let result = await stereoDiarizer.diarize(stereoAudio: stereoAudio, sampleRate: 16000)
+        let elapsed = Date().timeIntervalSince(startTime)
+
+        guard !result.segments.isEmpty else {
+            log("Run #\(runCount) stereo: no segments, falling back to Pyannote")
+            await runPyannoteDiarization(audio: monoAudio, segments: segments, duration: duration)
+            return
+        }
+
+        var seenIDs: [Int] = []
+        for seg in result.segments {
+            if !seenIDs.contains(seg.speakerId) { seenIDs.append(seg.speakerId) }
+        }
+
+        let speakerCount = seenIDs.count
+        log("Run #\(runCount) stereo (\(String(format: "%.1f", elapsed))s): \(String(format: "%.0f", duration))s audio, \(speakerCount) speakers, \(result.segments.count) segs")
+
+        applyDiarization(speakerCount: speakerCount, seenIDs: seenIDs, segments: segments) { id in
+            result.segments.filter { $0.speakerId == id }
+                .map { (startTime: $0.startTime, endTime: $0.endTime) }
+        }
+    }
+
+    private func runPyannoteDiarization(audio: [Float], segments: [TranscriptSegment], duration: Double) async {
         do {
             if pipeline == nil {
-                log("Loading diarization pipeline...")
+                log("Loading Pyannote pipeline...")
                 pipeline = try await PyannoteDiarizationPipeline.fromPretrained(
                     embeddingEngine: .coreml,
                     useVADFilter: true
                 )
-                log("Diarization pipeline loaded (with VAD filter)")
+                log("Pyannote pipeline loaded")
             }
             guard let pipeline else { return }
 
             let startTime = Date()
-            // onset/offset control speaker activity detection sensitivity.
-            // Lower = more sensitive to speaker changes.
-            // clusteringThreshold controls embedding-based merging:
-            //   1.0 = disabled (trust segmentation model)
-            //   lower = merge similar speakers (risks collapsing distinct speakers)
             let config = DiarizationConfig(
                 onset: 0.3,
                 offset: 0.2,
@@ -118,8 +164,6 @@ actor LiveSpeakerDiarizer {
                 clusteringThreshold: 1.0
             )
 
-            // Run diarization through the shared GPU queue to prevent Metal contention
-            // with concurrent LLM inference (both use MLX on the same Metal device).
             let capturedPipeline = pipeline
             let result: DiarizationResult
             if let queue = analysisQueue {
@@ -136,83 +180,98 @@ actor LiveSpeakerDiarizer {
             }
             let elapsed = Date().timeIntervalSince(startTime)
 
-            // Collect unique speaker IDs in order of first appearance
             var seenIDs: [Int] = []
             for diarSeg in result.segments {
-                if !seenIDs.contains(diarSeg.speakerId) {
-                    seenIDs.append(diarSeg.speakerId)
-                }
+                if !seenIDs.contains(diarSeg.speakerId) { seenIDs.append(diarSeg.speakerId) }
             }
 
             let speakerCount = seenIDs.count
-            let embeddingInfo = result.speakerEmbeddings.isEmpty ? "" : ", \(result.speakerEmbeddings.count) embeddings"
-            log("Run #\(runCount) (\(String(format: "%.1f", elapsed))s): \(String(format: "%.0f", duration))s audio, \(result.numSpeakers) raw → \(speakerCount) final speakers, \(result.segments.count) diar segs\(embeddingInfo)")
+            log("Run #\(runCount) pyannote (\(String(format: "%.1f", elapsed))s): \(String(format: "%.0f", duration))s audio, \(result.numSpeakers) raw → \(speakerCount) speakers, \(result.segments.count) segs")
 
-            // Allow regression if consistently seeing fewer speakers (5+ consecutive runs)
-            if speakerCount < maxSpeakersSeen {
-                regressionStreak += 1
-                if regressionStreak >= 5 {
-                    log("Resetting max speakers from \(maxSpeakersSeen) to \(speakerCount) after \(regressionStreak) consistent runs")
-                    maxSpeakersSeen = speakerCount
-                    regressionStreak = 0
-                } else {
-                    log("Skipping \(speakerCount)-speaker result (saw \(maxSpeakersSeen), streak \(regressionStreak)/5)")
-                    return
-                }
-            } else {
-                regressionStreak = 0
+            applyDiarization(speakerCount: speakerCount, seenIDs: seenIDs, segments: segments) { id in
+                result.segments.filter { $0.speakerId == id }
+                    .map { (startTime: $0.startTime, endTime: $0.endTime) }
             }
-            if speakerCount > maxSpeakersSeen {
-                maxSpeakersSeen = speakerCount
-            }
-
-            // Assign stable labels
-            while stableLabels.count < seenIDs.count {
-                stableLabels.append(Constants.speakerLabel(index: stableLabels.count))
-            }
-            var idToLabel: [Int: String] = [:]
-            for (index, id) in seenIDs.enumerated() {
-                idToLabel[id] = stableLabels[index]
-            }
-
-            // Log distribution with time ranges
-            for (id, label) in idToLabel.sorted(by: { $0.key < $1.key }) {
-                let spkSegs = result.segments.filter { $0.speakerId == id }
-                let totalDur = spkSegs.reduce(0.0) { $0 + Double($1.endTime - $1.startTime) }
-                log("  \(label): \(spkSegs.count) segs, \(String(format: "%.0f", totalDur))s total")
-            }
-
-            // Align diarization to transcript segments by temporal overlap
-            var updated = segments
-            var relabeled = 0
-            for i in updated.indices {
-                let tStart = Float(updated[i].startTime)
-                let tEnd = Float(updated[i].endTime)
-
-                var bestOverlap: Float = 0
-                var bestLabel: String?
-
-                for diarSeg in result.segments {
-                    let oStart = max(tStart, diarSeg.startTime)
-                    let oEnd = min(tEnd, diarSeg.endTime)
-                    let overlap = max(0, oEnd - oStart)
-                    if overlap > bestOverlap {
-                        bestOverlap = overlap
-                        bestLabel = idToLabel[diarSeg.speakerId]
-                    }
-                }
-
-                if let label = bestLabel, updated[i].speakerLabel != label {
-                    updated[i].speakerLabel = label
-                    relabeled += 1
-                }
-            }
-
-            log("Relabeled \(relabeled)/\(updated.count) segments")
-            onDiarizationComplete(updated)
 
         } catch {
             log("Diarization failed: \(error)")
         }
+    }
+
+    // MARK: - Shared Alignment
+
+    /// Apply diarization results to transcript segments. Shared by both stereo and Pyannote paths.
+    private func applyDiarization(
+        speakerCount: Int,
+        seenIDs: [Int],
+        segments: [TranscriptSegment],
+        segmentsForSpeaker: (Int) -> [(startTime: Float, endTime: Float)]
+    ) {
+        guard let onDiarizationComplete else { return }
+
+        // Speaker count regression logic
+        if speakerCount < maxSpeakersSeen {
+            regressionStreak += 1
+            if regressionStreak >= 5 {
+                log("Resetting max speakers from \(maxSpeakersSeen) to \(speakerCount)")
+                maxSpeakersSeen = speakerCount
+                regressionStreak = 0
+            } else {
+                log("Skipping \(speakerCount)-speaker result (saw \(maxSpeakersSeen), streak \(regressionStreak)/5)")
+                return
+            }
+        } else {
+            regressionStreak = 0
+        }
+        if speakerCount > maxSpeakersSeen { maxSpeakersSeen = speakerCount }
+
+        // Assign stable labels
+        while stableLabels.count < seenIDs.count {
+            stableLabels.append(Constants.speakerLabel(index: stableLabels.count))
+        }
+        var idToLabel: [Int: String] = [:]
+        for (index, id) in seenIDs.enumerated() {
+            idToLabel[id] = stableLabels[index]
+        }
+
+        // Log distribution
+        for (id, label) in idToLabel.sorted(by: { $0.key < $1.key }) {
+            let spkSegs = segmentsForSpeaker(id)
+            let totalDur = spkSegs.reduce(0.0) { $0 + Double($1.endTime - $1.startTime) }
+            log("  \(label): \(spkSegs.count) segs, \(String(format: "%.0f", totalDur))s total")
+        }
+
+        // Align diarization to transcript segments by temporal overlap
+        var updated = segments
+        var relabeled = 0
+
+        // Build flat list of (startTime, endTime, speakerId) for overlap matching
+        var allDiarSegs: [(startTime: Float, endTime: Float, label: String)] = []
+        for (id, label) in idToLabel {
+            for seg in segmentsForSpeaker(id) {
+                allDiarSegs.append((seg.startTime, seg.endTime, label))
+            }
+        }
+
+        for i in updated.indices {
+            let tStart = Float(updated[i].startTime)
+            let tEnd = Float(updated[i].endTime)
+            var bestOverlap: Float = 0
+            var bestLabel: String?
+            for diar in allDiarSegs {
+                let overlap = max(0, min(tEnd, diar.endTime) - max(tStart, diar.startTime))
+                if overlap > bestOverlap {
+                    bestOverlap = overlap
+                    bestLabel = diar.label
+                }
+            }
+            if let label = bestLabel, updated[i].speakerLabel != label {
+                updated[i].speakerLabel = label
+                relabeled += 1
+            }
+        }
+
+        log("Relabeled \(relabeled)/\(updated.count) segments")
+        onDiarizationComplete(updated)
     }
 }
