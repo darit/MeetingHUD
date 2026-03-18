@@ -96,7 +96,10 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         chunkCount = 0
 
         var sampleAccumulator: [Float] = []
-        let chunkSampleCount = Constants.Audio.sampleRate * 5 // 5s chunks for better language detection
+        // 15s chunks — Parakeet TDT works best with longer context for language
+        // detection + auto-punctuation (can handle up to 24min in one pass).
+        // Output is split into sentences for finer-grained speaker assignment.
+        let chunkSampleCount = Constants.Audio.sampleRate * 15
         var chunkIndex = 0
         var bufferCount = 0
 
@@ -110,7 +113,7 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
                 let chunk = Array(sampleAccumulator.prefix(chunkSampleCount))
                 sampleAccumulator.removeFirst(chunkSampleCount)
 
-                let chunkOffset = TimeInterval(chunkIndex) * 5.0
+                let chunkOffset = TimeInterval(chunkIndex) * 15.0
                 processChunk(chunk, offset: chunkOffset)
                 chunkIndex += 1
             }
@@ -186,13 +189,67 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
 
         let chunkDuration = TimeInterval(samples.count) / TimeInterval(Constants.Audio.sampleRate)
 
-        let segment = TranscriptSegment(
-            text: trimmed,
-            speakerLabel: defaultSpeakerName,
-            startTime: offset,
-            endTime: offset + chunkDuration
-        )
-        segmentContinuation?.yield(segment)
+        // Split into sentences for finer-grained diarization alignment.
+        // An 8s chunk may contain multiple speakers — sentence-level segments
+        // let the diarizer assign different speakers to each sentence.
+        let sentences = splitIntoSentences(trimmed)
+
+        if sentences.count <= 1 {
+            let segment = TranscriptSegment(
+                text: trimmed,
+                speakerLabel: defaultSpeakerName,
+                startTime: offset,
+                endTime: offset + chunkDuration
+            )
+            segmentContinuation?.yield(segment)
+        } else {
+            // Distribute time proportionally by character count
+            let totalChars = sentences.reduce(0) { $0 + $1.count }
+            var currentTime = offset
+            for sentence in sentences {
+                let fraction = Double(sentence.count) / Double(max(totalChars, 1))
+                let segDuration = chunkDuration * fraction
+                let segment = TranscriptSegment(
+                    text: sentence,
+                    speakerLabel: defaultSpeakerName,
+                    startTime: currentTime,
+                    endTime: currentTime + segDuration
+                )
+                segmentContinuation?.yield(segment)
+                currentTime += segDuration
+            }
+        }
+    }
+
+    /// Split text into sentences using punctuation boundaries.
+    /// Parakeet auto-punctuates, so we can split on . ? ! and keep the punctuation.
+    private func splitIntoSentences(_ text: String) -> [String] {
+        var sentences: [String] = []
+        var current = ""
+
+        for char in text {
+            current.append(char)
+            if char == "." || char == "?" || char == "!" || char == "¿" || char == "¡" {
+                let trimmed = current.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty && trimmed.count > 5 { // skip very short fragments
+                    sentences.append(trimmed)
+                    current = ""
+                }
+            }
+        }
+        // Remaining text
+        let remaining = current.trimmingCharacters(in: .whitespaces)
+        if !remaining.isEmpty {
+            if remaining.count > 5 {
+                sentences.append(remaining)
+            } else if let last = sentences.last {
+                sentences[sentences.count - 1] = last + " " + remaining
+            } else {
+                sentences.append(remaining)
+            }
+        }
+
+        return sentences
     }
 
     private static let languageNameToCode: [String: String] = [
