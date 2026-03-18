@@ -536,7 +536,9 @@ final class AppState {
                 onDebugLog: { [weak self] msg in
                     self?.addDebug(msg)
                 },
-                analysisQueue: sharedAnalysisQueue
+                // Only serialize diarization with LLM when both use GPU (local MLX).
+                // Claude runs via CLI subprocess — no GPU contention.
+                analysisQueue: selectedAnalysisProvider == .localMLX ? sharedAnalysisQueue : nil
             )
             await liveSpeakerDiarizer.start()
         }
@@ -751,6 +753,7 @@ final class AppState {
         chatTask?.cancel()
         memoryManager.stop()
         recommendationAgent.stop()
+        Task { await sharedAnalysisQueue.cancelAll() }
         Task { await liveSpeakerDiarizer.stop() }
 
         // Mark all speakers as not speaking
@@ -930,7 +933,8 @@ final class AppState {
         if !audio.isEmpty {
             isDiarizing = true
             do {
-                let output = try await speakerDiarizer.diarize(audio: audio, segments: segments, analysisQueue: sharedAnalysisQueue)
+                let diarQueue = selectedAnalysisProvider == .localMLX ? sharedAnalysisQueue : nil
+                let output = try await speakerDiarizer.diarize(audio: audio, segments: segments, analysisQueue: diarQueue)
                 // Apply rename map to diarized segments
                 var diarSegments = output.segments
                 for i in diarSegments.indices {

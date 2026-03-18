@@ -29,6 +29,11 @@ actor AnalysisQueue {
         }
     }
 
+    /// Cancel all pending work items. In-flight item continues but nothing new runs.
+    func cancelAll() {
+        pending.removeAll()
+    }
+
     private func drain() async {
         while !pending.isEmpty {
             let item = pending.removeFirst()
