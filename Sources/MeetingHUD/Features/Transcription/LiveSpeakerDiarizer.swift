@@ -97,19 +97,25 @@ actor LiveSpeakerDiarizer {
             if pipeline == nil {
                 log("Loading diarization pipeline...")
                 pipeline = try await PyannoteDiarizationPipeline.fromPretrained(
-                    embeddingEngine: .coreml
+                    embeddingEngine: .coreml,
+                    useVADFilter: true
                 )
-                log("Diarization pipeline loaded")
+                log("Diarization pipeline loaded (with VAD filter)")
             }
             guard let pipeline else { return }
 
             let startTime = Date()
+            // onset/offset control speaker activity detection sensitivity.
+            // Lower = more sensitive to speaker changes.
+            // clusteringThreshold controls embedding-based merging:
+            //   1.0 = disabled (trust segmentation model)
+            //   lower = merge similar speakers (risks collapsing distinct speakers)
             let config = DiarizationConfig(
-                onset: 0.4,
-                offset: 0.25,
+                onset: 0.3,
+                offset: 0.2,
                 minSpeechDuration: 0.3,
                 minSilenceDuration: 0.15,
-                clusteringThreshold: 0.75
+                clusteringThreshold: 1.0
             )
 
             // Run diarization through the shared GPU queue to prevent Metal contention
@@ -139,7 +145,8 @@ actor LiveSpeakerDiarizer {
             }
 
             let speakerCount = seenIDs.count
-            log("Run #\(runCount) (\(String(format: "%.1f", elapsed))s): \(String(format: "%.0f", duration))s audio, \(speakerCount) speakers, \(result.segments.count) diar segs")
+            let embeddingInfo = result.speakerEmbeddings.isEmpty ? "" : ", \(result.speakerEmbeddings.count) embeddings"
+            log("Run #\(runCount) (\(String(format: "%.1f", elapsed))s): \(String(format: "%.0f", duration))s audio, \(result.numSpeakers) raw → \(speakerCount) final speakers, \(result.segments.count) diar segs\(embeddingInfo)")
 
             // Allow regression if consistently seeing fewer speakers (5+ consecutive runs)
             if speakerCount < maxSpeakersSeen {
