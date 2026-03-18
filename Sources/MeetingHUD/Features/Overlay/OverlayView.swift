@@ -648,8 +648,10 @@ private struct SpeakerRow: View {
 // MARK: - Profiles Column (when not recording)
 
 private struct ProfilesColumn: View {
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \Interlocutor.lastSeen, order: .reverse) private var interlocutors: [Interlocutor]
     @State private var selectedProfile: Interlocutor?
+    @State private var profileToDelete: Interlocutor?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -682,6 +684,9 @@ private struct ProfilesColumn: View {
                                 isSelected: selectedProfile?.id == person.id,
                                 onTap: {
                                     selectedProfile = selectedProfile?.id == person.id ? nil : person
+                                },
+                                onDelete: {
+                                    profileToDelete = person
                                 }
                             )
                         }
@@ -690,6 +695,24 @@ private struct ProfilesColumn: View {
             }
         }
         .padding(12)
+        .alert("Delete Speaker?", isPresented: Binding(
+            get: { profileToDelete != nil },
+            set: { if !$0 { profileToDelete = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { profileToDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let profile = profileToDelete {
+                    if selectedProfile?.id == profile.id { selectedProfile = nil }
+                    modelContext.delete(profile)
+                    try? modelContext.save()
+                    profileToDelete = nil
+                }
+            }
+        } message: {
+            if let profile = profileToDelete {
+                Text("Delete \(profile.name) and their voice profile?")
+            }
+        }
     }
 }
 
@@ -697,6 +720,7 @@ private struct ProfileRow: View {
     let person: Interlocutor
     let isSelected: Bool
     var onTap: () -> Void
+    var onDelete: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -761,6 +785,16 @@ private struct ProfileRow: View {
                     if let avgTalkPercent = averageTalkPercent {
                         DetailLabel(icon: "mic", text: "Avg talk: \(Int(avgTalkPercent))%")
                     }
+
+                    Button {
+                        onDelete?()
+                    } label: {
+                        Label("Delete Profile", systemImage: "trash")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
                 }
                 .padding(.leading, 14)
                 .padding(.top, 2)
