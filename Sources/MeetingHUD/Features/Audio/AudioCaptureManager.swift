@@ -369,25 +369,9 @@ final class AudioCaptureManager: @unchecked Sendable {
         // This activates Acoustic Echo Cancellation (AEC) + noise suppression +
         // automatic gain control — strips speaker output from the mic signal so
         // we don't double-capture system audio.
-        do {
-            try engine.inputNode.setVoiceProcessingEnabled(true)
-            // Disable "ducking" — voice processing auto-lowers system audio volume,
-            // which causes Chrome/YouTube/etc. to get quieter when recording starts.
-            if let audioUnit = engine.inputNode.audioUnit {
-                var duckingEnabled: UInt32 = 0 // 0 = disabled
-                AudioUnitSetProperty(
-                    audioUnit,
-                    kAUVoiceIOProperty_OtherAudioDuckingConfiguration,
-                    kAudioUnitScope_Global,
-                    0,
-                    &duckingEnabled,
-                    UInt32(MemoryLayout<UInt32>.size)
-                )
-            }
-            print("[AudioCapture] Voice processing (AEC) enabled on mic, ducking disabled")
-        } catch {
-            print("[AudioCapture] Voice processing unavailable: \(error)")
-        }
+        // Note: Voice processing (AEC) is NOT enabled because it causes macOS to
+        // "duck" (lower volume of) all other system audio — Chrome, YouTube, etc.
+        // get quieter. The mic mute button handles echo control instead.
 
         let continuation = self.streamContinuation
         let levelPtr = self._micLevelStorage
