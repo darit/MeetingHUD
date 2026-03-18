@@ -37,6 +37,11 @@ struct MeetingHUDApp: App {
         }
     }()
 
+    init() {
+        // Install crash handler — writes debug log + stack trace to ~/Library/Logs/MeetingHUD/
+        CrashReporter.install()
+    }
+
     var body: some Scene {
         MenuBarExtra("MeetingHUD", systemImage: menuBarIcon) {
             MenuBarView(

@@ -12,7 +12,7 @@ enum PromptTemplates {
 
         Be calibrated: most professional speech is near 0.0 (neutral). \
         Reserve extreme values for clearly emotional language. \
-        Do not explain your reasoning. Output only the JSON object.
+        Do not explain your reasoning. Output ONLY the raw JSON object, no markdown.
         """
 
     /// System prompt for batched sentiment analysis of multiple numbered segments.
@@ -27,7 +27,7 @@ enum PromptTemplates {
         - "index": the segment number (1-based)
         - "sentiment": a float from -1.0 to 1.0
 
-        Do not explain your reasoning. Output only the JSON array.
+        Do not explain your reasoning. Output ONLY the raw JSON array, no markdown.
         """
 
     /// Build a user message for batched sentiment analysis.
@@ -58,7 +58,7 @@ enum PromptTemplates {
 
         Only include clear, actionable items — not vague mentions. \
         If there are no action items or key statements, return empty arrays. \
-        Do not explain your reasoning. Output only the JSON object.
+        Do not explain your reasoning. Output ONLY the raw JSON object, no markdown.
         """
 
     /// Build a user message for signal detection.
@@ -125,7 +125,7 @@ enum PromptTemplates {
         write topics and summaries in Spanish. If English, use English.
 
         Only include topics that are clearly discussed, not passing mentions. \
-        Output only the JSON array.
+        Output ONLY the raw JSON array. No explanation, no reasoning, no markdown.
         """
 
     /// System prompt for transcript compression (hot → warm tier).

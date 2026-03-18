@@ -5,6 +5,7 @@ import Foundation
 enum LLMJSONParser {
 
     /// Extract and decode a `Decodable` value from potentially messy LLM text.
+    /// Handles reasoning/thinking models that output chain-of-thought before JSON.
     static func extract<T: Decodable>(_ type: T.Type, from text: String) throws -> T {
         let decoder = JSONDecoder()
 
@@ -21,11 +22,23 @@ enum LLMJSONParser {
             return result
         }
 
-        // Strategy 3: Find first JSON structure (object or array)
-        if let extracted = extractJSONSubstring(from: text),
-           let data = extracted.data(using: .utf8),
-           let result = try? decoder.decode(T.self, from: data) {
-            return result
+        // Strategy 3: Strip <think>...</think> blocks (reasoning models)
+        let withoutThinking = stripThinkingBlocks(text)
+        if withoutThinking != text {
+            let strippedThinking = stripCodeFences(withoutThinking)
+            if let data = strippedThinking.data(using: .utf8),
+               let result = try? decoder.decode(T.self, from: data) {
+                return result
+            }
+        }
+
+        // Strategy 4: Find ALL balanced JSON structures and try each
+        let candidates = extractAllJSONSubstrings(from: text)
+        for candidate in candidates {
+            if let data = candidate.data(using: .utf8),
+               let result = try? decoder.decode(T.self, from: data) {
+                return result
+            }
         }
 
         throw ParseError.noValidJSON(rawText: String(text.prefix(500)))
@@ -59,46 +72,89 @@ enum LLMJSONParser {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func extractJSONSubstring(from text: String) -> String? {
-        // Find first `[` or `{` and match to its balanced closing counterpart
-        guard let startIndex = text.firstIndex(where: { $0 == "[" || $0 == "{" }) else {
-            return nil
+    /// Strip thinking/reasoning blocks from reasoning models.
+    /// Handles: <think>...</think>, </think> without opening tag (streamed),
+    /// <reasoning>...</reasoning>, and numbered reasoning lists (1. **...**)
+    private static func stripThinkingBlocks(_ text: String) -> String {
+        var result = text
+
+        // Full <think>...</think> blocks
+        if let pattern = try? Regex(#"<think>[\s\S]*?</think>"#) {
+            result = result.replacing(pattern, with: "")
+        }
+        // </think> without opening tag — everything before it is thinking
+        if let closeIdx = result.range(of: "</think>") {
+            result = String(result[closeIdx.upperBound...])
+        }
+        // <reasoning>...</reasoning>
+        if let pattern = try? Regex(#"<reasoning>[\s\S]*?</reasoning>"#) {
+            result = result.replacing(pattern, with: "")
+        }
+        if let closeIdx = result.range(of: "</reasoning>") {
+            result = String(result[closeIdx.upperBound...])
         }
 
-        let opener = text[startIndex]
-        let closer: Character = opener == "[" ? "]" : "}"
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
-        // Bracket-counting: find the first balanced close
-        var depth = 0
-        var inString = false
-        var escaped = false
+    /// Extract ALL balanced JSON structures (objects and arrays) from text.
+    /// Returns candidates ordered by length descending (largest/most complete first).
+    private static func extractAllJSONSubstrings(from text: String) -> [String] {
+        var results: [String] = []
+        var searchStart = text.startIndex
 
-        for index in text[startIndex...].indices {
-            let char = text[index]
-
-            if escaped {
-                escaped = false
-                continue
+        while searchStart < text.endIndex {
+            guard let startIndex = text[searchStart...].firstIndex(where: { $0 == "[" || $0 == "{" }) else {
+                break
             }
-            if char == "\\" && inString {
-                escaped = true
-                continue
-            }
-            if char == "\"" {
-                inString.toggle()
-                continue
-            }
-            guard !inString else { continue }
 
-            if char == opener { depth += 1 }
-            else if char == closer {
-                depth -= 1
-                if depth == 0 {
-                    return String(text[startIndex...index])
+            let opener = text[startIndex]
+            let closer: Character = opener == "[" ? "]" : "}"
+
+            var depth = 0
+            var inString = false
+            var escaped = false
+            var found = false
+
+            for index in text[startIndex...].indices {
+                let char = text[index]
+
+                if escaped {
+                    escaped = false
+                    continue
+                }
+                if char == "\\" && inString {
+                    escaped = true
+                    continue
+                }
+                if char == "\"" {
+                    inString.toggle()
+                    continue
+                }
+                guard !inString else { continue }
+
+                if char == opener { depth += 1 }
+                else if char == closer {
+                    depth -= 1
+                    if depth == 0 {
+                        let candidate = String(text[startIndex...index])
+                        // Only include if it looks like real JSON (has quotes or digits)
+                        if candidate.contains("\"") {
+                            results.append(candidate)
+                        }
+                        searchStart = text.index(after: index)
+                        found = true
+                        break
+                    }
                 }
             }
+
+            if !found {
+                searchStart = text.index(after: startIndex)
+            }
         }
 
-        return nil
+        // Largest first — reasoning models put the real JSON last
+        return results.sorted { $0.count > $1.count }
     }
 }
