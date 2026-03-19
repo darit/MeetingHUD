@@ -40,6 +40,26 @@ extension MLXModelInfo {
 
     static let recommended: [MLXModelInfo] = [
         // --- 8 GB Macs ---
+        // Note: Qwen 3.5 uses "qwen3_5" arch not yet supported by mlx-swift-lm.
+        // Stick with qwen2/qwen3/smollm3/gemma3/phi which are supported.
+        MLXModelInfo(
+            repoId: "mlx-community/SmolLM3-3B-Instruct-4bit",
+            name: "SmolLM3 3B (fast, multilingual)",
+            parameterCount: "3B",
+            quantization: "4-bit",
+            sizeOnDisk: 1_700_000_000,
+            minimumRAM: 8_000_000_000,
+            source: .recommended
+        ),
+        MLXModelInfo(
+            repoId: "mlx-community/gemma-3-4b-it-qat-4bit",
+            name: "Gemma 3 4B QAT (Google)",
+            parameterCount: "4B",
+            quantization: "4-bit",
+            sizeOnDisk: 2_500_000_000,
+            minimumRAM: 8_000_000_000,
+            source: .recommended
+        ),
         MLXModelInfo(
             repoId: "mlx-community/Qwen2.5-3B-Instruct-4bit",
             name: "Qwen 2.5 3B Instruct",
@@ -61,20 +81,20 @@ extension MLXModelInfo {
 
         // --- 16 GB Macs ---
         MLXModelInfo(
+            repoId: "mlx-community/Qwen3-8B-4bit",
+            name: "Qwen 3 8B (best 16GB, reasoning)",
+            parameterCount: "8B",
+            quantization: "4-bit",
+            sizeOnDisk: 4_300_000_000,
+            minimumRAM: 16_000_000_000,
+            source: .recommended
+        ),
+        MLXModelInfo(
             repoId: "mlx-community/Qwen2.5-7B-Instruct-4bit",
             name: "Qwen 2.5 7B Instruct",
             parameterCount: "7B",
             quantization: "4-bit",
             sizeOnDisk: 4_280_000_000,
-            minimumRAM: 16_000_000_000,
-            source: .recommended
-        ),
-        MLXModelInfo(
-            repoId: "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
-            name: "Mistral 7B Instruct v0.3",
-            parameterCount: "7B",
-            quantization: "4-bit",
-            sizeOnDisk: 4_080_000_000,
             minimumRAM: 16_000_000_000,
             source: .recommended
         ),
@@ -100,7 +120,7 @@ extension MLXModelInfo {
         ),
         MLXModelInfo(
             repoId: "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
-            name: "Devstral Small 2 24B (code/instruct)",
+            name: "Devstral Small 2 24B (code-focused)",
             parameterCount: "24B",
             quantization: "4-bit",
             sizeOnDisk: 14_100_000_000,

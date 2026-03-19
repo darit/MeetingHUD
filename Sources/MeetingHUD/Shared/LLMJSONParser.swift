@@ -41,6 +41,13 @@ enum LLMJSONParser {
             }
         }
 
+        // Strategy 5: Repair truncated JSON (LLM output cut off mid-array/object)
+        if let repaired = repairTruncatedJSON(text),
+           let data = repaired.data(using: .utf8),
+           let result = try? decoder.decode(T.self, from: data) {
+            return result
+        }
+
         throw ParseError.noValidJSON(rawText: String(text.prefix(500)))
     }
 
@@ -95,6 +102,88 @@ enum LLMJSONParser {
         }
 
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Attempt to repair truncated JSON by finding the last complete element
+    /// and closing any open brackets. Handles cases like:
+    ///   `[{"topic": "A", "summary": "B"}, {"topic": "C", "sum`  →  `[{"topic": "A", "summary": "B"}]`
+    private static func repairTruncatedJSON(_ text: String) -> String? {
+        let cleaned = stripCodeFences(stripThinkingBlocks(text))
+
+        // Find the first [ or {
+        guard let startIdx = cleaned.firstIndex(where: { $0 == "[" || $0 == "{" }) else { return nil }
+        let opener = cleaned[startIdx]
+        let closer: Character = opener == "[" ? "]" : "}"
+
+        let fragment = String(cleaned[startIdx...])
+
+        // For arrays: find the last complete object by looking for the last "}," or "}" that
+        // closes a complete element, then close the array
+        if opener == "[" {
+            // Find positions of all complete top-level objects
+            var depth = 0
+            var inString = false
+            var escaped = false
+            var lastCompleteEnd: String.Index?
+
+            for idx in fragment.indices {
+                let ch = fragment[idx]
+                if escaped { escaped = false; continue }
+                if ch == "\\" && inString { escaped = true; continue }
+                if ch == "\"" { inString.toggle(); continue }
+                guard !inString else { continue }
+
+                if ch == "{" || ch == "[" { depth += 1 }
+                else if ch == "}" || ch == "]" {
+                    depth -= 1
+                    if depth == 1 && ch == "}" {
+                        // We just closed a top-level object inside the array
+                        lastCompleteEnd = idx
+                    }
+                    if depth == 0 {
+                        // Array was already complete, shouldn't reach here but handle it
+                        return nil
+                    }
+                }
+            }
+
+            // Rebuild: everything up to and including the last complete object, then close
+            if let end = lastCompleteEnd {
+                var repaired = String(fragment[fragment.startIndex...end])
+                // Remove any trailing comma
+                let trimmed = repaired.trimmingCharacters(in: .whitespacesAndNewlines)
+                repaired = trimmed.hasSuffix(",") ? String(trimmed.dropLast()) : trimmed
+                repaired += "]"
+                return repaired
+            }
+        }
+
+        // For objects: similar logic — find last complete key-value pair
+        if opener == "{" {
+            var depth = 0
+            var inString = false
+            var escaped = false
+            var lastComma: String.Index?
+
+            for idx in fragment.indices {
+                let ch = fragment[idx]
+                if escaped { escaped = false; continue }
+                if ch == "\\" && inString { escaped = true; continue }
+                if ch == "\"" { inString.toggle(); continue }
+                guard !inString else { continue }
+
+                if ch == "{" || ch == "[" { depth += 1 }
+                else if ch == "}" || ch == "]" { depth -= 1; if depth == 0 { return nil } }
+                else if ch == "," && depth == 1 { lastComma = idx }
+            }
+
+            if let comma = lastComma {
+                let repaired = String(fragment[fragment.startIndex..<comma]) + "}"
+                return repaired
+            }
+        }
+
+        return nil
     }
 
     /// Extract ALL balanced JSON structures (objects and arrays) from text.

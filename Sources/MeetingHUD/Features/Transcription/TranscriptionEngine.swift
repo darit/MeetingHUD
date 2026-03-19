@@ -45,8 +45,12 @@ final class TranscriptionEngine: @unchecked Sendable, TranscriptionProvider {
 
     // MARK: - Audio Accumulation
 
-    /// Full meeting audio for post-meeting SpeakerKit diarization.
+    /// Rolling audio buffer for live diarization (last 5 minutes max).
+    /// Older audio is discarded to prevent unbounded memory growth.
     private(set) var accumulatedAudio: [Float] = []
+
+    /// Maximum audio to keep in memory (5 minutes at 16kHz = ~19 MB).
+    private let maxAccumulatedSamples = 16000 * 300 // 5 minutes
 
     // MARK: - Speaker Turn Detection
 
@@ -149,10 +153,20 @@ final class TranscriptionEngine: @unchecked Sendable, TranscriptionProvider {
             sampleAccumulator.append(contentsOf: samples)
             accumulatedAudio.append(contentsOf: samples)
 
+            // Trim to rolling window to prevent unbounded memory growth
+            if accumulatedAudio.count > maxAccumulatedSamples {
+                accumulatedAudio.removeFirst(accumulatedAudio.count - maxAccumulatedSamples)
+            }
+
             // Process when we have enough samples for a chunk
-            if sampleAccumulator.count >= chunkSampleCount {
+            while sampleAccumulator.count >= chunkSampleCount {
                 let chunk = Array(sampleAccumulator.prefix(chunkSampleCount))
                 sampleAccumulator.removeFirst(chunkSampleCount)
+
+                let backlogSecs = Double(sampleAccumulator.count) / Double(Constants.Audio.sampleRate)
+                if backlogSecs > 5 {
+                    print("[Whisper] ⚠ Backlog: \(String(format: "%.0f", backlogSecs))s of audio waiting")
+                }
 
                 let chunkOffset = TimeInterval(chunkIndex) * Constants.Timing.transcriptionChunkInterval
                 await processChunk(chunk, offset: chunkOffset)
@@ -232,9 +246,9 @@ final class TranscriptionEngine: @unchecked Sendable, TranscriptionProvider {
             do {
                 let detection = try await whisperKit.detectLangauge(audioArray: samples)
                 language = detection.language
-                print("[TranscriptionEngine] Auto-detected language: \(detection.language)")
+                print("[Whisper] Auto-detected language: \(detection.language)")
             } catch {
-                print("[TranscriptionEngine] Language detection failed, defaulting to es: \(error)")
+                print("[Whisper] Language detection failed, defaulting to es: \(error)")
                 language = "es"
             }
         }
@@ -246,9 +260,15 @@ final class TranscriptionEngine: @unchecked Sendable, TranscriptionProvider {
             withoutTimestamps: false
         )
 
+        let chunkDuration = Double(samples.count) / Double(Constants.Audio.sampleRate)
+        let start = CFAbsoluteTimeGetCurrent()
+
         do {
             let results = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
+            let elapsed = CFAbsoluteTimeGetCurrent() - start
+            let ratio = elapsed / chunkDuration
 
+            var segCount = 0
             for result in results {
                 for segment in result.segments {
                     guard let text = cleanText(segment.text) else { continue }
@@ -269,10 +289,15 @@ final class TranscriptionEngine: @unchecked Sendable, TranscriptionProvider {
                         endTime: segmentEnd
                     )
                     segmentContinuation?.yield(transcriptSegment)
+                    segCount += 1
                 }
             }
+
+            if ratio > 1.0 {
+                print("[Whisper] SLOW chunk \(String(format: "%.1f", chunkDuration))s audio took \(String(format: "%.1f", elapsed))s (\(String(format: "%.1fx", ratio))) → \(segCount) segs")
+            }
         } catch {
-            print("[TranscriptionEngine] Transcription error: \(error)")
+            print("[Whisper] Transcription error: \(error)")
         }
     }
 }

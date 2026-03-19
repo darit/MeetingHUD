@@ -22,13 +22,15 @@ final class AlwaysOnCaptureManager {
     // MARK: - Configuration
 
     /// RMS threshold to trigger speech detection (energy-based VAD tier 1).
-    var rmsThreshold: Float = 0.01
+    /// Low threshold works for both mic and system audio capture.
+    var rmsThreshold: Float = 0.003
 
     /// Duration of sustained RMS above threshold before confirming speech onset (seconds).
     var onsetDuration: TimeInterval = 0.5
 
     /// Duration of silence before ending a conversation (seconds).
-    var silenceTimeout: TimeInterval = 120
+    /// 5 minutes — meetings have natural pauses; don't fragment sessions aggressively.
+    var silenceTimeout: TimeInterval = 300
 
     // MARK: - State
 

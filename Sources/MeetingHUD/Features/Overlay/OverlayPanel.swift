@@ -7,7 +7,7 @@ final class OverlayPanel: NSPanel {
 
     static func create() -> OverlayPanel {
         let panel = OverlayPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 380),
+            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 680),
             styleMask: [.borderless, .nonactivatingPanel, .resizable],
             backing: .buffered,
             defer: false
@@ -19,8 +19,8 @@ final class OverlayPanel: NSPanel {
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
 
-        panel.minSize = NSSize(width: 600, height: 280)
-        panel.maxSize = NSSize(width: 1600, height: 900)
+        panel.minSize = NSSize(width: 800, height: 500)
+        panel.maxSize = NSSize(width: 2000, height: 1400)
 
         panel.collectionBehavior = [
             .canJoinAllSpaces,

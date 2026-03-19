@@ -13,6 +13,7 @@ final class MLXModelManager {
     var availableModels: [MLXModelInfo] = []
     var selectedModel: MLXModelInfo?
     var loadState: LoadState = .unloaded
+    var loadingStatusText: String = ""
     var downloadProgress: DownloadProgress?
 
     enum LoadState: Equatable {
@@ -173,14 +174,17 @@ final class MLXModelManager {
         unloadModel()
 
         loadState = .loading(progress: 0)
+        loadingStatusText = "Preparing \(model.name)…"
         selectedModel = model
         UserDefaults.standard.set(model.repoId, forKey: Self.selectedModelKey)
 
         let config: ModelConfiguration
         if let localPath = model.localPath {
             config = ModelConfiguration(directory: URL(fileURLWithPath: localPath))
+            loadingStatusText = "Loading \(model.name)…"
         } else {
             config = ModelConfiguration(id: model.repoId)
+            loadingStatusText = "Downloading \(model.name)…"
         }
         modelConfiguration = config
 
@@ -189,14 +193,27 @@ final class MLXModelManager {
                 configuration: config
             ) { progress in
                 Task { @MainActor in
+                    let pct = Int(progress.fractionCompleted * 100)
+                    if pct < 100 {
+                        self.loadingStatusText = "Downloading \(model.name)… \(pct)%"
+                    } else {
+                        self.loadingStatusText = "Loading \(model.name) into memory…"
+                    }
                     self.loadState = .loading(progress: progress.fractionCompleted)
                 }
             }
 
             modelContainer = container
             loadState = .loaded
+            loadingStatusText = ""
         } catch {
-            loadState = .error("Failed to load: \(error.localizedDescription)")
+            let msg = error.localizedDescription
+            if msg.contains("Unsupported model type") {
+                loadState = .error("Unsupported architecture — try a different model")
+            } else {
+                loadState = .error("Failed: \(msg)")
+            }
+            loadingStatusText = ""
             modelConfiguration = nil
             throw error
         }
@@ -222,6 +239,90 @@ final class MLXModelManager {
             try? FileManager.default.removeItem(at: Self.modelCacheDir(for: model.repoId))
         }
         scanForModels()
+    }
+
+    // MARK: - Cleanup
+
+    /// Remove empty/incomplete model directories from HF cache and LM Studio.
+    /// Returns count of directories removed and bytes freed.
+    func cleanupFailedDownloads() -> (removed: Int, bytesFreed: UInt64) {
+        var removed = 0
+        var bytesFreed: UInt64 = 0
+
+        // Clean HF cache: remove model dirs with no snapshots or empty snapshots
+        if let contents = try? FileManager.default.contentsOfDirectory(
+            at: Self.hfCacheURL, includingPropertiesForKeys: [.isDirectoryKey]
+        ) {
+            for dir in contents where dir.lastPathComponent.hasPrefix("models--") {
+                let snapshots = dir.appendingPathComponent("snapshots")
+                let hasConfig = (try? FileManager.default.contentsOfDirectory(atPath: snapshots.path))?
+                    .contains { name in
+                        let snapshotDir = snapshots.appendingPathComponent(name)
+                        return FileManager.default.fileExists(
+                            atPath: snapshotDir.appendingPathComponent("config.json").path
+                        )
+                    } ?? false
+
+                if !hasConfig {
+                    let size = directorySize(at: dir)
+                    try? FileManager.default.removeItem(at: dir)
+                    bytesFreed += size
+                    removed += 1
+                }
+            }
+        }
+
+        // Clean HF cache tmp directory
+        let tmpDir = Self.hfCacheURL.appendingPathComponent("tmp")
+        if let tmpContents = try? FileManager.default.contentsOfDirectory(
+            at: tmpDir, includingPropertiesForKeys: nil
+        ) {
+            for file in tmpContents {
+                let size = directorySize(at: file)
+                try? FileManager.default.removeItem(at: file)
+                bytesFreed += size
+                removed += 1
+            }
+        }
+
+        // Clean LM Studio: remove empty model directories (0 bytes, no safetensors)
+        if let orgs = try? FileManager.default.contentsOfDirectory(
+            at: Self.lmStudioModelsURL, includingPropertiesForKeys: [.isDirectoryKey]
+        ) {
+            for orgDir in orgs {
+                guard let modelDirs = try? FileManager.default.contentsOfDirectory(
+                    at: orgDir, includingPropertiesForKeys: [.isDirectoryKey]
+                ) else { continue }
+
+                for modelDir in modelDirs {
+                    var isDir: ObjCBool = false
+                    guard FileManager.default.fileExists(atPath: modelDir.path, isDirectory: &isDir),
+                          isDir.boolValue else { continue }
+
+                    let files = (try? FileManager.default.contentsOfDirectory(atPath: modelDir.path)) ?? []
+                    let hasSafetensors = files.contains { $0.hasSuffix(".safetensors") }
+                    let hasGGUF = files.contains { $0.hasSuffix(".gguf") }
+
+                    if !hasSafetensors && !hasGGUF {
+                        let size = directorySize(at: modelDir)
+                        try? FileManager.default.removeItem(at: modelDir)
+                        bytesFreed += size
+                        removed += 1
+                    }
+                }
+
+                // Remove empty org dirs
+                if let remaining = try? FileManager.default.contentsOfDirectory(atPath: orgDir.path),
+                   remaining.isEmpty {
+                    try? FileManager.default.removeItem(at: orgDir)
+                }
+            }
+        }
+
+        if removed > 0 {
+            scanForModels()
+        }
+        return (removed, bytesFreed)
     }
 
     // MARK: - Helpers
@@ -342,7 +443,7 @@ final class MLXModelManager {
     }
 
     nonisolated private func inferParamCount(from name: String) -> String {
-        let patterns = ["1B", "3B", "4B", "7B", "8B", "13B", "14B", "24B", "70B"]
+        let patterns = ["0.5B", "0.8B", "1B", "2B", "3B", "4B", "7B", "8B", "9B", "13B", "14B", "24B", "32B", "70B"]
         let upper = name.uppercased()
         for p in patterns.reversed() {
             if upper.contains(p) || upper.contains("-\(p)") { return p }

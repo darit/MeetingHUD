@@ -8,15 +8,67 @@ BUILD_DIR="$SCRIPT_DIR/.build/xcode"
 BINARY="$BUILD_DIR/Build/Products/Debug/MeetingHUD"
 APP_BUNDLE="$BUILD_DIR/Build/Products/Debug/MeetingHUD.app"
 
-# Use the Apple Development certificate if available (stable identity = permissions persist).
-# Falls back to ad-hoc signing if no dev cert found.
-SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Apple Development" | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
+# Use a stable signing identity so macOS remembers permissions across rebuilds.
+# Priority: Apple Development cert > self-signed "MeetingHUD Dev" cert > create one.
+SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Apple Development" | grep -v "REVOKED" | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
 
-if [ -n "$SIGN_IDENTITY" ]; then
-    echo "Using signing identity: $SIGN_IDENTITY"
+if [ -z "$SIGN_IDENTITY" ]; then
+    # Try our self-signed cert
+    SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "MeetingHUD Dev" | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
+fi
+
+if [ -z "$SIGN_IDENTITY" ]; then
+    echo "No signing certificate found. Creating self-signed 'MeetingHUD Dev' certificate..."
+    echo "You may be prompted for your login password."
+
+    # Create a self-signed code signing certificate with proper EKUs
+    cat > /tmp/mhud-cs.cnf <<'CSEOF'
+[req]
+default_bits = 2048
+prompt = no
+default_md = sha256
+distinguished_name = dn
+x509_extensions = v3_cs
+
+[dn]
+CN = MeetingHUD Dev
+
+[v3_cs]
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+basicConstraints = critical, CA:false
+CSEOF
+
+    openssl req -x509 -newkey rsa:2048 -keyout /tmp/mhud-key.pem -out /tmp/mhud-cert.pem \
+        -days 3650 -nodes -config /tmp/mhud-cs.cnf 2>/dev/null
+
+    # Convert to p12 with -legacy flag (required for OpenSSL 3.x + macOS Keychain)
+    openssl pkcs12 -export -out /tmp/mhud.p12 -inkey /tmp/mhud-key.pem -in /tmp/mhud-cert.pem \
+        -passout pass:mhud -legacy 2>/dev/null
+
+    # Import into login keychain
+    KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+    [ ! -f "$KEYCHAIN" ] && KEYCHAIN="$HOME/Library/Keychains/login.keychain"
+    security import /tmp/mhud.p12 -k "$KEYCHAIN" -T /usr/bin/codesign -P "mhud" 2>/dev/null || true
+
+    # Trust the certificate for code signing
+    security add-trusted-cert -d -r trustRoot -p codeSign -k "$KEYCHAIN" /tmp/mhud-cert.pem 2>/dev/null || true
+
+    # Clean up temp files
+    rm -f /tmp/mhud-cs.cnf /tmp/mhud-key.pem /tmp/mhud-cert.pem /tmp/mhud.p12
+
+    # Verify
+    SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "MeetingHUD Dev" | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
+
+    if [ -n "$SIGN_IDENTITY" ]; then
+        echo "✓ Created 'MeetingHUD Dev' certificate — permissions will persist across rebuilds"
+    else
+        echo "⚠ Certificate creation failed. Falling back to ad-hoc signing."
+        echo "  Permissions (audio, screen recording) will need re-granting after each build."
+        SIGN_IDENTITY="-"
+    fi
 else
-    SIGN_IDENTITY="-"
-    echo "⚠ No Apple Development cert found, using ad-hoc signing (permissions will reset on rebuild)"
+    echo "Using signing identity: $SIGN_IDENTITY"
 fi
 
 # Ensure Xcode is the active developer directory
@@ -71,15 +123,25 @@ for bundle in "$PRODUCTS_DIR"/*.bundle; do
     [ -d "$bundle" ] && cp -R "$bundle" "$APP_BUNDLE/Contents/Resources/" 2>/dev/null
 done
 
+# Remove quarantine xattr BEFORE signing (prevents Gatekeeper from flagging)
+xattr -cr "$APP_BUNDLE" 2>/dev/null || true
+
 # Codesign with entitlements
 codesign --force --deep --sign "$SIGN_IDENTITY" \
     --entitlements "$SCRIPT_DIR/Resources/MeetingHUD.entitlements" \
+    --options runtime \
     "$APP_BUNDLE" 2>/dev/null
 
 # Verify and launch (detached from terminal)
 if codesign -d --entitlements - "$APP_BUNDLE" 2>/dev/null | grep -q "audio.capture"; then
     echo "✓ Signed and launching MeetingHUD.app"
-    open -a "$APP_BUNDLE"
+    # Try open first, fall back to running binary directly if Gatekeeper blocks it
+    if ! open -a "$APP_BUNDLE" 2>/dev/null; then
+        echo "⚠ open failed (Gatekeeper?), launching binary directly..."
+        nohup "$APP_BUNDLE/Contents/MacOS/MeetingHUD" >/dev/null 2>&1 &
+        disown
+        echo "✓ Launched via binary"
+    fi
 else
     echo "✗ Signing failed"
     exit 1

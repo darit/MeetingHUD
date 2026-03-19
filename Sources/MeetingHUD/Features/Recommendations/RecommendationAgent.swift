@@ -35,6 +35,7 @@ final class RecommendationAgent {
     // MARK: - Callbacks
 
     var onRecommendations: (([Recommendation]) -> Void)?
+    var onDynamicWidgets: (([DynamicWidget]) -> Void)?
 
     init(llmProvider: any LLMProvider, memoryManager: MemoryManager, analysisQueue: AnalysisQueue) {
         self.llmProvider = llmProvider
@@ -143,6 +144,11 @@ final class RecommendationAgent {
         return true
     }
 
+    /// Whether the current LLM provider supports JARVIS mode (dynamic widgets).
+    private var isJarvisCapable: Bool {
+        llmProvider is ClaudeCLIProvider
+    }
+
     private func generateRecommendations(
         trigger: String,
         allSegments: [TranscriptSegment],
@@ -176,6 +182,7 @@ final class RecommendationAgent {
         let capturedTopic = currentTopic
         let llm = llmProvider
         let search = webSearch
+        let useJarvis = isJarvisCapable
 
         generationTask = Task {
             // Search for web context about the current topic
@@ -190,8 +197,9 @@ final class RecommendationAgent {
                 }
             }
 
+            let systemPrompt = useJarvis ? PromptTemplates.jarvisDashboard : PromptTemplates.proactiveAnalysis
             let messages = [
-                ChatMessage(role: .system, content: PromptTemplates.proactiveAnalysis),
+                ChatMessage(role: .system, content: systemPrompt),
                 ChatMessage(role: .user, content: """
                     Trigger: \(trigger)
 
@@ -207,6 +215,19 @@ final class RecommendationAgent {
                     guard !Task.isCancelled else { return }
                     await MainActor.run {
                         guard let self else { return }
+
+                        if useJarvis {
+                            // Try parsing as dynamic widgets first
+                            let widgets = DynamicWidget.parse(from: response)
+                            if !widgets.isEmpty {
+                                self.log("Generated \(widgets.count) JARVIS widgets")
+                                self.onDynamicWidgets?(widgets)
+                                return
+                            }
+                            self.log("JARVIS widget parse failed, falling back to recommendations")
+                        }
+
+                        // Fallback: parse as recommendations
                         let recommendations = self.parseRecommendations(response)
                         if recommendations.isEmpty {
                             self.log("LLM returned no parseable insights")

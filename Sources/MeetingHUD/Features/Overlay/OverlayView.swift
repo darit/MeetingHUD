@@ -66,7 +66,8 @@ struct OverlayView: View {
                         SpeakersColumn(
                             speakers: appState.speakers,
                             onRename: { old, new in appState.renameSpeaker(from: old, to: new) },
-                            onRemove: { name in appState.removeSpeaker(name: name) }
+                            onRemove: { name in appState.removeSpeaker(name: name) },
+                            onMerge: { source, target in appState.mergeSpeakers(source: source, into: target) }
                         )
                             .frame(width: 180)
                     } else {
@@ -79,6 +80,7 @@ struct OverlayView: View {
                     // MARK: - Column 2: Insights Dashboard (main panel)
                     InsightsColumn(
                         recommendations: appState.recommendations,
+                        dynamicWidgets: appState.dynamicWidgets,
                         currentTopic: appState.currentTopicName,
                         topics: appState.currentTopics,
                         actionItems: appState.currentActionItems,
@@ -90,7 +92,7 @@ struct OverlayView: View {
                         segments: appState.activeTranscriptSegments,
                         onDismiss: { id in appState.dismissRecommendation(id: id) }
                     )
-                    .frame(minWidth: 400)
+                    .frame(minWidth: 500)
 
                     Divider().opacity(0.3)
 
@@ -102,8 +104,13 @@ struct OverlayView: View {
                         downloadProgress: appState.activeTranscriptionEngine.downloadProgress,
                         recordingError: appState.recordingError,
                         isRecording: appState.isRecording,
+                        isListening: appState.captureState == .listening,
                         audioLevel: appState.audioCaptureManager.audioLevel,
-                        onRenameSpeaker: { old, new in appState.renameSpeaker(from: old, to: new) }
+                        onRenameSpeaker: { old, new in appState.renameSpeaker(from: old, to: new) },
+                        onRetry: {
+                            appState.recordingError = nil
+                            Task { await appState.startRecording() }
+                        }
                     )
                     .frame(width: 320)
                 }
@@ -116,7 +123,7 @@ struct OverlayView: View {
                     isExpanded: $chatExpanded
                 )
             }
-            .frame(minHeight: chatExpanded ? 440 : 300)
+            .frame(minHeight: chatExpanded ? 640 : 550)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
@@ -329,19 +336,22 @@ private struct OverlayToolbar: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Record / Stop button
+            // State indicator / control
             Button {
-                if appState.isRecording {
+                switch appState.captureState {
+                case .off:
+                    appState.startListening()
+                case .listening:
+                    appState.stopListening()
+                case .conversation, .meeting:
                     appState.stopRecording()
-                } else {
-                    appState.startRecording()
                 }
             } label: {
                 HStack(spacing: 5) {
                     Circle()
-                        .fill(appState.isRecording ? .red : .secondary)
+                        .fill(stateColor)
                         .frame(width: 8, height: 8)
-                    Text(appState.isRecording ? "Stop" : "Record")
+                    Text(stateLabel)
                         .font(.caption.weight(.medium))
                 }
             }
@@ -431,26 +441,68 @@ private struct OverlayToolbar: View {
 
             // LLM status badge — shows when MLX is selected but not loaded
             if appState.selectedAnalysisProvider == .localMLX && !appState.isMLXReady {
+                let manager = MLXModelManager.shared
+                let statusText = manager.loadingStatusText
+                let loadProgress: Double? = {
+                    if case .loading(let p) = manager.loadState { return p }
+                    return nil
+                }()
+                let hasError: String? = {
+                    if case .error(let msg) = manager.loadState { return msg }
+                    return nil
+                }()
+
                 Button {
+                    if hasError != nil {
+                        // Reset error and retry
+                        manager.loadState = .unloaded
+                    }
                     appState.autoLoadMLXIfNeeded()
                 } label: {
-                    HStack(spacing: 3) {
-                        if appState.isMLXLoading {
-                            ProgressView().controlSize(.mini).scaleEffect(0.7)
-                        } else {
-                            Image(systemName: "cpu.fill")
-                                .font(.system(size: 8))
+                    VStack(spacing: 2) {
+                        HStack(spacing: 3) {
+                            if appState.isMLXLoading {
+                                ProgressView().controlSize(.mini).scaleEffect(0.7)
+                            } else if hasError != nil {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 8))
+                            } else {
+                                Image(systemName: "cpu.fill")
+                                    .font(.system(size: 8))
+                            }
+
+                            if let error = hasError {
+                                Text("Failed — Tap to retry")
+                                    .font(.system(size: 9))
+                                    .help(error)
+                            } else if !statusText.isEmpty {
+                                Text(statusText)
+                                    .font(.system(size: 9))
+                                    .lineLimit(1)
+                            } else if manager.selectedModel == nil {
+                                Text("No model selected")
+                                    .font(.system(size: 9))
+                            } else {
+                                Text("Load Model")
+                                    .font(.system(size: 9))
+                            }
                         }
-                        Text(appState.isMLXLoading ? "Loading…" : "Load Model")
-                            .font(.system(size: 9))
+
+                        // Download progress bar
+                        if let progress = loadProgress, progress > 0 && progress < 1.0 {
+                            ProgressView(value: progress)
+                                .progressViewStyle(.linear)
+                                .frame(width: 80)
+                                .tint(.orange)
+                        }
                     }
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(hasError != nil ? .red : .orange)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(.orange.opacity(0.12), in: Capsule())
+                    .background((hasError != nil ? Color.red : Color.orange).opacity(0.12), in: Capsule())
                 }
                 .buttonStyle(.plain)
-                .help("Tap to load the local MLX model, or switch to Claude in the menu bar")
+                .help(hasError ?? "Tap to load the local MLX model")
             }
 
             // History button
@@ -477,6 +529,24 @@ private struct OverlayToolbar: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+    }
+
+    private var stateColor: Color {
+        switch appState.captureState {
+        case .off: return .secondary
+        case .listening: return .yellow
+        case .conversation: return .green
+        case .meeting: return .red
+        }
+    }
+
+    private var stateLabel: String {
+        switch appState.captureState {
+        case .off: return "Paused"
+        case .listening: return "Listening"
+        case .conversation: return "Active"
+        case .meeting: return "Meeting"
+        }
     }
 }
 
@@ -508,6 +578,7 @@ private struct SpeakersColumn: View {
     let speakers: [SpeakerInfo]
     var onRename: ((String, String) -> Void)?
     var onRemove: ((String) -> Void)?
+    var onMerge: ((String, String) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -526,7 +597,13 @@ private struct SpeakersColumn: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 6) {
                         ForEach(speakers) { speaker in
-                            SpeakerRow(speaker: speaker, onRename: onRename, onRemove: onRemove)
+                            SpeakerRow(
+                                speaker: speaker,
+                                otherSpeakers: speakers.filter { $0.id != speaker.id },
+                                onRename: onRename,
+                                onRemove: onRemove,
+                                onMerge: onMerge
+                            )
                         }
                     }
                 }
@@ -538,8 +615,10 @@ private struct SpeakersColumn: View {
 
 private struct SpeakerRow: View {
     let speaker: SpeakerInfo
+    var otherSpeakers: [SpeakerInfo] = []
     var onRename: ((String, String) -> Void)?
     var onRemove: ((String) -> Void)?
+    var onMerge: ((String, String) -> Void)?
     @Query(sort: \Interlocutor.lastSeen, order: .reverse) private var interlocutors: [Interlocutor]
     @State private var isEditing = false
     @State private var editName = ""
@@ -635,6 +714,18 @@ private struct SpeakerRow: View {
                 editName = ""
                 isEditing = true
             }
+            if !otherSpeakers.isEmpty {
+                Menu("Merge into...") {
+                    ForEach(otherSpeakers) { other in
+                        Button {
+                            onMerge?(speaker.name, other.name)
+                        } label: {
+                            Label(other.name, systemImage: "arrow.triangle.merge")
+                        }
+                    }
+                }
+            }
+            Divider()
             Button("Remove Speaker", role: .destructive) {
                 onRemove?(speaker.name)
             }
@@ -862,8 +953,10 @@ private struct TranscriptColumn: View {
     var downloadProgress: Double = 0
     var recordingError: String? = nil
     var isRecording: Bool = false
+    var isListening: Bool = false
     var audioLevel: Float = 0
     var onRenameSpeaker: ((String, String) -> Void)? = nil
+    var onRetry: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -890,14 +983,28 @@ private struct TranscriptColumn: View {
             .padding(.bottom, 4)
 
             if let error = recordingError {
-                ContentUnavailableView {
-                    Label("Recording Error", systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                } description: {
+                VStack(spacing: 12) {
+                    Label("Error", systemImage: "exclamationmark.triangle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
                     Text(error)
                         .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                    if let onRetry {
+                        Button {
+                            onRetry()
+                        } label: {
+                            Label("Try Again", systemImage: "arrow.clockwise")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .tint(.blue)
+                    }
                 }
-                .frame(maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if isModelLoading {
                 VStack(spacing: 14) {
                     // Download progress bar if downloading, spinner otherwise
@@ -948,11 +1055,21 @@ private struct TranscriptColumn: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                    } else if isListening {
+                        Image(systemName: "ear")
+                            .font(.title2)
+                            .foregroundStyle(.yellow.opacity(0.6))
+                        Text("Listening for speech…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("Transcript appears when audio is detected")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
                     } else {
-                        Image(systemName: "waveform")
+                        Image(systemName: "pause.circle")
                             .font(.title2)
                             .foregroundStyle(.tertiary)
-                        Text("Press Record to start")
+                        Text("Paused")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1124,6 +1241,7 @@ private struct TranscriptRow: View {
 
 private struct InsightsColumn: View {
     let recommendations: [Recommendation]
+    var dynamicWidgets: [DynamicWidget] = []
     var currentTopic: String?
     var topics: [TopicInfo]
     var actionItems: [SignalDetector.DetectedAction]
@@ -1137,6 +1255,30 @@ private struct InsightsColumn: View {
 
     private var totalTalkTime: TimeInterval {
         speakers.reduce(0) { $0 + $1.talkTime }
+    }
+
+    private var totalWordCount: Int {
+        segments.reduce(0) { $0 + $1.text.split(separator: " ").count }
+    }
+
+    private var totalQuestions: Int {
+        segments.filter { $0.text.contains("?") }.count
+    }
+
+    /// Words per minute per speaker
+    private var speakerPace: [(name: String, wpm: Double, color: Color)] {
+        var words: [String: Int] = [:]
+        var time: [String: TimeInterval] = [:]
+        for seg in segments {
+            words[seg.speakerLabel, default: 0] += seg.text.split(separator: " ").count
+            time[seg.speakerLabel, default: 0] += seg.endTime - seg.startTime
+        }
+        return speakers.compactMap { speaker in
+            let w = words[speaker.name] ?? 0
+            let t = time[speaker.name] ?? 0
+            guard t > 5 else { return nil }
+            return (speaker.name, Double(w) / (t / 60), speaker.color)
+        }
     }
 
     /// Rolling sentiment data points (averaged per 5-segment window).
@@ -1245,6 +1387,34 @@ private struct InsightsColumn: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .background(.purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    }
+
+                    // Quick stats bar
+                    if segmentCount > 0 {
+                        HStack(spacing: 0) {
+                            QuickStat(icon: "text.word.spacing", value: "\(totalWordCount)", label: "words")
+                            Spacer()
+                            QuickStat(icon: "bubble.left.and.bubble.right", value: "\(segmentCount)", label: "segments")
+                            Spacer()
+                            QuickStat(icon: "questionmark.circle", value: "\(totalQuestions)", label: "questions")
+                            Spacer()
+                            QuickStat(icon: "person.2", value: "\(speakers.count)", label: "speakers")
+                            if totalTalkTime > 60 {
+                                Spacer()
+                                QuickStat(icon: "speedometer", value: "\(Int(Double(totalWordCount) / (totalTalkTime / 60)))", label: "wpm")
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+
+                    // Speaker timeline (swimlane)
+                    if speakers.count >= 1 && segments.count >= 3 {
+                        SectionCard(icon: "timeline.selection", color: .cyan) {
+                            SpeakerTimeline(segments: segments, speakers: speakers)
+                                .frame(height: CGFloat(max(2, min(speakers.count, 5))) * 14 + 16)
+                        }
                     }
 
                     // Dashboard grid — 2 columns for compact widgets
@@ -1372,6 +1542,29 @@ private struct InsightsColumn: View {
                         }
                     }
 
+                    // Speaking pace (words per minute)
+                    if !speakerPace.isEmpty {
+                        SectionCard(icon: "speedometer", color: .mint) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                ForEach(speakerPace, id: \.name) { item in
+                                    HStack(spacing: 6) {
+                                        Circle()
+                                            .fill(item.color)
+                                            .frame(width: 6, height: 6)
+                                        Text(item.name)
+                                            .font(.system(size: 10))
+                                            .lineLimit(1)
+                                            .frame(maxWidth: 80, alignment: .leading)
+                                        Spacer()
+                                        Text("\(Int(item.wpm)) wpm")
+                                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                            .foregroundStyle(item.wpm > 180 ? .orange : item.wpm < 100 ? .blue : .green)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Meeting health score
                     if speakers.count > 1 && totalTalkTime > 30 {
                         SectionCard(icon: "heart.text.square", color: .pink) {
@@ -1397,7 +1590,15 @@ private struct InsightsColumn: View {
                     }
                     } // end LazyVGrid
 
-                    // LLM insights (full-width, below the grid)
+                    // JARVIS dynamic widgets (full-width, below the grid)
+                    if !dynamicWidgets.isEmpty {
+                        ForEach(dynamicWidgets) { widget in
+                            DynamicWidgetView(widget: widget)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+                    }
+
+                    // LLM insights — fallback for MLX / non-JARVIS mode
                     if !recommendations.isEmpty {
                         ForEach(recommendations) { rec in
                             RecommendationCard(recommendation: rec, onDismiss: {
@@ -1407,7 +1608,7 @@ private struct InsightsColumn: View {
                     }
 
                     // Empty state
-                    if recommendations.isEmpty && topics.isEmpty && actionItems.isEmpty && currentTopic == nil {
+                    if recommendations.isEmpty && dynamicWidgets.isEmpty && topics.isEmpty && actionItems.isEmpty && currentTopic == nil {
                         ContentUnavailableView {
                             Label("Insights will appear here", systemImage: "sparkles")
                                 .font(.caption)
@@ -1475,6 +1676,91 @@ private struct HealthBar: View {
                         .fill(color)
                         .frame(width: geo.size.width * CGFloat(min(1, max(0, value))))
                 }
+        }
+    }
+}
+
+/// Quick stat pill for the stats bar.
+private struct QuickStat: View {
+    let icon: String
+    let value: String
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 8))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            Text(label)
+                .font(.system(size: 8))
+                .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+/// Swimlane timeline showing when each speaker talked.
+private struct SpeakerTimeline: View {
+    let segments: [TranscriptSegment]
+    let speakers: [SpeakerInfo]
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            guard let first = segments.first, let last = segments.last else {
+                return AnyView(EmptyView())
+            }
+            let totalDuration = max(1, last.endTime - first.startTime)
+            let baseTime = first.startTime
+            let speakerNames = speakers.prefix(5).map(\.name)
+            let rowHeight: CGFloat = 14
+
+            return AnyView(
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(speakerNames.enumerated()), id: \.offset) { idx, name in
+                        let speakerColor = speakers.first(where: { $0.name == name })?.color ?? .gray
+                        HStack(spacing: 4) {
+                            Text(name)
+                                .font(.system(size: 8))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 55, alignment: .trailing)
+                                .lineLimit(1)
+
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 1)
+                                    .fill(.white.opacity(0.03))
+                                    .frame(height: rowHeight - 4)
+
+                                ForEach(segments.filter({ $0.speakerLabel == name }), id: \.id) { seg in
+                                    let xStart = CGFloat((seg.startTime - baseTime) / totalDuration) * (w - 63)
+                                    let segWidth = max(2, CGFloat((seg.endTime - seg.startTime) / totalDuration) * (w - 63))
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(speakerColor.opacity(0.7))
+                                        .frame(width: segWidth, height: rowHeight - 4)
+                                        .offset(x: xStart)
+                                }
+                            }
+                        }
+                        .frame(height: rowHeight)
+                    }
+
+                    // Time axis
+                    HStack {
+                        Text("0:00")
+                        Spacer()
+                        let mins = Int(totalDuration / 60)
+                        if mins > 0 {
+                            Text("\(mins)m")
+                        } else {
+                            Text("\(Int(totalDuration))s")
+                        }
+                    }
+                    .font(.system(size: 7, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 59)
+                }
+            )
         }
     }
 }

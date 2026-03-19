@@ -180,6 +180,7 @@ private struct TranscriptionSettingsTab: View {
 
 private struct ModelSettingsTab: View {
     @State private var modelManager = MLXModelManager.shared
+    @State private var cleanupResult: String?
 
     private var ramGB: Double {
         Double(modelManager.systemRAM) / 1_073_741_824
@@ -258,17 +259,29 @@ private struct ModelSettingsTab: View {
                                     .foregroundStyle(.green)
                                     .font(.caption)
                             case .loading(let progress):
-                                ProgressView(value: progress)
-                                    .frame(width: 60)
-                            case .error(let msg):
                                 VStack(spacing: 2) {
+                                    ProgressView(value: progress)
+                                        .frame(width: 80)
+                                    if !modelManager.loadingStatusText.isEmpty {
+                                        Text(modelManager.loadingStatusText)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                            case .error(let msg):
+                                VStack(spacing: 4) {
                                     Label("Error", systemImage: "exclamationmark.triangle.fill")
                                         .foregroundStyle(.red)
                                         .font(.caption)
                                     Text(msg)
                                         .font(.caption2)
                                         .foregroundStyle(.red)
-                                        .lineLimit(1)
+                                        .lineLimit(2)
+                                    Button("Retry") {
+                                        Task { try? await modelManager.loadModel(model) }
+                                    }
+                                    .controlSize(.mini)
                                 }
                             case .unloaded:
                                 Button("Load") {
@@ -289,9 +302,28 @@ private struct ModelSettingsTab: View {
                 .listStyle(.inset)
             }
 
-            if modelManager.loadState == .loaded {
-                HStack {
-                    Spacer()
+            HStack {
+                if cleanupResult != nil {
+                    Text(cleanupResult!)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .transition(.opacity)
+                }
+                Spacer()
+                Button("Clean Failed Downloads") {
+                    let result = modelManager.cleanupFailedDownloads()
+                    if result.removed > 0 {
+                        let freed = formatBytes(result.bytesFreed)
+                        cleanupResult = "Removed \(result.removed) incomplete downloads (\(freed) freed)"
+                    } else {
+                        cleanupResult = "No incomplete downloads found"
+                    }
+                    // Auto-dismiss after 5s
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { cleanupResult = nil }
+                }
+                .controlSize(.small)
+
+                if modelManager.loadState == .loaded {
                     Button("Unload Model") {
                         modelManager.unloadModel()
                     }

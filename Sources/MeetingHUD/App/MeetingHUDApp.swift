@@ -33,7 +33,18 @@ struct MeetingHUDApp: App {
         do {
             return try ModelContainer(for: schema, configurations: [config])
         } catch {
-            fatalError("Failed to create ModelContainer: \(error)")
+            // Migration failed — delete the corrupted store and retry
+            print("[SwiftData] Migration failed: \(error). Deleting store and retrying...")
+            let storeURL = config.url
+            for ext in ["", "-shm", "-wal"] {
+                let url = URL(fileURLWithPath: storeURL.path + ext)
+                try? FileManager.default.removeItem(at: url)
+            }
+            do {
+                return try ModelContainer(for: schema, configurations: [config])
+            } catch {
+                fatalError("Failed to create ModelContainer even after reset: \(error)")
+            }
         }
     }()
 
@@ -107,13 +118,13 @@ struct MenuBarView: View {
 
             switch appState.captureState {
             case .off:
-                Button("Start Recording") {
-                    appState.startRecording()
+                Button("Resume Listening") {
+                    appState.startListening()
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
 
-                Button("Start Listening (Always-On)") {
-                    appState.startListening()
+                Button("Start Recording") {
+                    appState.startRecording()
                 }
 
             case .listening:
@@ -121,7 +132,7 @@ struct MenuBarView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
-                Button("Stop Listening") {
+                Button("Pause") {
                     appState.stopListening()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
@@ -131,8 +142,9 @@ struct MenuBarView: View {
                     .font(.caption2)
                     .foregroundStyle(.green)
 
-                Button("Stop Recording") {
+                Button("Pause") {
                     appState.stopRecording()
+                    appState.stopListening()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
 
@@ -145,8 +157,9 @@ struct MenuBarView: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
 
-                Button("Stop Recording") {
+                Button("Pause") {
                     appState.stopRecording()
+                    appState.stopListening()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
 
@@ -204,12 +217,13 @@ struct MenuBarView: View {
                     }
                 }
 
-                if appState.selectedAnalysisProvider == .localMLX {
-                    Divider()
-                    let models = MLXModelManager.shared.availableModels
-                    if models.isEmpty {
-                        Text("No models found").font(.caption2)
-                    } else {
+                Divider()
+
+                let models = MLXModelManager.shared.availableModels
+                if models.isEmpty {
+                    Text("No local models found").font(.caption2)
+                } else {
+                    Menu("Local Model: \(MLXModelManager.shared.selectedModel?.name ?? "None")") {
                         ForEach(models) { model in
                             Button {
                                 Task {
@@ -286,7 +300,14 @@ struct MenuBarView: View {
             Divider()
 
             Button("Settings...") {
+                NSApp.activate(ignoringOtherApps: true)
                 NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                // Ensure settings window comes to front
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    for window in NSApp.windows where window.title.contains("Settings") || window.className.contains("Settings") {
+                        window.makeKeyAndOrderFront(nil)
+                    }
+                }
             }
             .keyboardShortcut(",")
 
