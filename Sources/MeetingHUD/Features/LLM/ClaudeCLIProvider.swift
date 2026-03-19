@@ -56,8 +56,8 @@ final class ClaudeCLIProvider: LLMProvider, @unchecked Sendable {
     }
 
     func stream(messages: [ChatMessage]) async throws -> AsyncStream<String> {
-        let prompt = Self.formatPrompt(messages: messages)
-        let inputChars = prompt.count
+        let (systemPrompt, userPrompt) = Self.splitPrompt(messages: messages)
+        let inputChars = systemPrompt.count + userPrompt.count
         let onCall = self.onCallComplete
 
         guard let claudePath = Self.resolvedClaudePath() else {
@@ -72,7 +72,11 @@ final class ClaudeCLIProvider: LLMProvider, @unchecked Sendable {
                 do {
                     let process = Process()
                     process.executableURL = URL(fileURLWithPath: claudePath)
-                    process.arguments = ["-p", "--model", self.model.rawValue]
+                    var args = ["-p", "--model", self.model.rawValue]
+                    if !systemPrompt.isEmpty {
+                        args += ["--system-prompt", systemPrompt]
+                    }
+                    process.arguments = args
 
                     let inputPipe = Pipe()
                     let outputPipe = Pipe()
@@ -90,8 +94,8 @@ final class ClaudeCLIProvider: LLMProvider, @unchecked Sendable {
 
                     try process.run()
 
-                    // Write prompt to stdin and close
-                    let promptData = prompt.data(using: .utf8) ?? Data()
+                    // Write user prompt to stdin and close
+                    let promptData = userPrompt.data(using: .utf8) ?? Data()
                     inputPipe.fileHandleForWriting.write(promptData)
                     inputPipe.fileHandleForWriting.closeFile()
 
@@ -131,18 +135,27 @@ final class ClaudeCLIProvider: LLMProvider, @unchecked Sendable {
 
     // MARK: - Message Formatting
 
-    static func formatPrompt(messages: [ChatMessage]) -> String {
-        var parts: [String] = []
+    /// Split messages into system prompt (passed via --system-prompt flag)
+    /// and user prompt (passed via stdin). This ensures Claude CLI correctly
+    /// applies the system prompt instead of treating it as conversation text.
+    static func splitPrompt(messages: [ChatMessage]) -> (system: String, user: String) {
+        var systemParts: [String] = []
+        var userParts: [String] = []
+
         for message in messages {
             switch message.role {
             case .system:
-                parts.append("[System Instructions]\n\(message.content)")
+                systemParts.append(message.content)
             case .user:
-                parts.append("[User]\n\(message.content)")
+                userParts.append(message.content)
             case .assistant:
-                parts.append("[Assistant]\n\(message.content)")
+                userParts.append("[Previous response]\n\(message.content)")
             }
         }
-        return parts.joined(separator: "\n\n---\n\n")
+
+        return (
+            system: systemParts.joined(separator: "\n\n"),
+            user: userParts.joined(separator: "\n\n")
+        )
     }
 }
