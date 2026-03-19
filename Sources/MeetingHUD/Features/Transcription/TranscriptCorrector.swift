@@ -81,28 +81,38 @@ final class TranscriptCorrector {
         var batchStart = correctedUpTo
         var totalCorrected = 0
 
-        // Process in ~25s windows to stay under Parakeet's 30s limit
+        // Process in windows that stay under Parakeet's 30s limit.
+        // Segments can have large time gaps between them, so we check actual audio duration.
         while batchStart < endIndex {
-            // Find how many segments fit in a ~25s window
-            var batchEnd = batchStart
-            let batchAudioStart = segments[batchStart].startTime
-            for i in batchStart..<endIndex {
-                if segments[i].endTime - batchAudioStart > maxWindowSeconds {
+            var batchEnd = batchStart + 1 // At least 1 segment
+
+            // Add segments until audio window would exceed limit
+            for i in (batchStart + 1)..<endIndex {
+                let candidateEnd = segments[i].endTime + 1
+                let candidateStart = segments[batchStart].startTime - 1
+                let audioDuration = candidateEnd - candidateStart
+                if audioDuration > maxWindowSeconds {
                     break
                 }
                 batchEnd = i + 1
             }
-            // At least 2 segments per batch
-            if batchEnd <= batchStart + 1 { batchEnd = min(batchStart + 2, endIndex) }
 
             let batchSegments = Array(segments[batchStart..<batchEnd])
             guard !batchSegments.isEmpty else { break }
 
-            // Extract audio window with 1s padding on each side
+            // Extract audio window with 1s padding
             let windowStart = max(0, batchSegments.first!.startTime - 1)
             let windowEnd = min(Double(audio.count) / Double(sampleRate), batchSegments.last!.endTime + 1)
             let startSample = max(0, Int(windowStart * Double(sampleRate)))
             let endSample = min(audio.count, Int(windowEnd * Double(sampleRate)))
+            let audioDuration = Double(endSample - startSample) / Double(sampleRate)
+
+            // Skip if audio window exceeds limit (single long segment)
+            guard audioDuration <= maxWindowSeconds + 2 else {
+                log("Skipping seg \(batchStart): \(String(format: "%.0f", audioDuration))s exceeds limit")
+                batchStart = batchEnd
+                continue
+            }
 
             guard endSample - startSample >= sampleRate * 2 else {
                 batchStart = batchEnd
