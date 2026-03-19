@@ -1590,7 +1590,7 @@ private struct InsightsColumn: View {
                     }
                     } // end LazyVGrid
 
-                    // JARVIS dynamic widgets (full-width, below the grid)
+                    // Dynamic dynamic widgets (full-width, below the grid)
                     if !dynamicWidgets.isEmpty {
                         ForEach(dynamicWidgets) { widget in
                             DynamicWidgetView(widget: widget)
@@ -1598,7 +1598,7 @@ private struct InsightsColumn: View {
                         }
                     }
 
-                    // LLM insights — fallback for MLX / non-JARVIS mode
+                    // LLM insights — fallback for MLX / non-Dynamic mode
                     if !recommendations.isEmpty {
                         ForEach(recommendations) { rec in
                             RecommendationCard(recommendation: rec, onDismiss: {

@@ -144,7 +144,7 @@ final class RecommendationAgent {
         return true
     }
 
-    /// Whether the current LLM provider supports JARVIS mode (dynamic widgets).
+    /// Whether the current LLM provider supports dynamic mode (dynamic widgets).
     private var isJarvisCapable: Bool {
         llmProvider is ClaudeCLIProvider
     }
@@ -197,7 +197,7 @@ final class RecommendationAgent {
                 }
             }
 
-            let systemPrompt = useJarvis ? PromptTemplates.jarvisDashboard : PromptTemplates.proactiveAnalysis
+            let systemPrompt = useJarvis ? PromptTemplates.dynamicDashboard : PromptTemplates.proactiveAnalysis
             let messages = [
                 ChatMessage(role: .system, content: systemPrompt),
                 ChatMessage(role: .user, content: """
@@ -220,11 +220,11 @@ final class RecommendationAgent {
                             // Try parsing as dynamic widgets first
                             let widgets = DynamicWidget.parse(from: response)
                             if !widgets.isEmpty {
-                                self.log("Generated \(widgets.count) JARVIS widgets")
+                                self.log("Generated \(widgets.count) dynamic widgets")
                                 self.onDynamicWidgets?(widgets)
                                 return
                             }
-                            self.log("JARVIS widget parse failed, falling back to recommendations")
+                            self.log("dynamic widget parse failed, falling back to recommendations")
                         }
 
                         // Fallback: parse as recommendations

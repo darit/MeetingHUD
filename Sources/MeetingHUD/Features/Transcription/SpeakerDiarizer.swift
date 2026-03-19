@@ -29,11 +29,11 @@ final class SpeakerDiarizer: Sendable {
         )
 
         let config = DiarizationConfig(
-            onset: 0.3,
-            offset: 0.2,
+            onset: 0.35,
+            offset: 0.25,
             minSpeechDuration: 0.3,
             minSilenceDuration: 0.15,
-            clusteringThreshold: 1.0
+            clusteringThreshold: 0.4 // WeSpeaker clustering for compressed mono audio
         )
 
         // Run through shared GPU queue to avoid Metal contention with LLM

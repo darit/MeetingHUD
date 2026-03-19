@@ -149,11 +149,11 @@ actor LiveSpeakerDiarizer {
 
             let startTime = Date()
             let config = DiarizationConfig(
-                onset: 0.3,
-                offset: 0.2,
+                onset: 0.35,
+                offset: 0.25,
                 minSpeechDuration: 0.3,
                 minSilenceDuration: 0.15,
-                clusteringThreshold: 1.0
+                clusteringThreshold: 0.4 // WeSpeaker clustering — low threshold to separate voices in compressed mono audio
             )
             sortformer.resetState()
             let result = sortformer.diarize(audio: audio, sampleRate: 16000, config: config)

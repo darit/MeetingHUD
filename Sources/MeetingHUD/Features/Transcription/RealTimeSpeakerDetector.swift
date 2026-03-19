@@ -146,8 +146,8 @@ actor RealTimeSpeakerDetector {
     private var sessionMean: [Float] = []
 
     /// Match threshold AFTER channel compensation (much lower than raw cosine).
-    /// Channel-compensated embeddings have much wider spread.
-    private let matchThreshold: Float = 0.35
+    /// Low threshold for system audio where all voices go through the same codec/channel.
+    private let matchThreshold: Float = 0.20
 
     /// Minimum embeddings before we trust the session mean for compensation.
     private let minEmbeddingsForCompensation = 3

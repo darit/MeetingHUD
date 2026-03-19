@@ -26,6 +26,11 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
     /// Whether language has been auto-detected and locked for this session.
     private var languageLocked = false
 
+    /// Language vote tracker — counts how many chunks detected each language.
+    /// After 3+ chunks in one language, we lock and reject chunks in other languages.
+    private var languageVotes: [String: Int] = [:]
+    private var detectedSessionLanguage: String?
+
     /// Debug log callback — wired to AppState.addDebug to show in overlay.
     var onDebugLog: ((String) -> Void)?
 
@@ -104,22 +109,29 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         isTranscribing = true
         accumulatedAudio = []
         languageLocked = language != nil
+        languageVotes = [:]
+        detectedSessionLanguage = language != nil ? language : nil
         chunkCount = 0
 
         var sampleAccumulator: [Float] = []
         let sampleRate = Constants.Audio.sampleRate
         let minChunkSamples = sampleRate * 5   // 5s min — don't send tiny chunks
-        let targetChunkSamples = sampleRate * 15 // 15s target — more context = better accuracy + language detection
-        let maxChunkSamples = sampleRate * 30   // 30s max — safety cap
+        let targetChunkSamples = sampleRate * 15 // 15s target — more context = better accuracy
+        let maxChunkSamples = sampleRate * 45   // 45s hard cap
         var chunkIndex = 0
         var bufferCount = 0
         /// Running count of "speech" samples in the accumulator (RMS above threshold).
         var speechSamplesInAccumulator = 0
         /// Threshold to distinguish real speech from background noise in system audio.
-        /// System audio RMS during speech is ~0.03-0.07, during silence ~0.001-0.005.
         let speechRMSThreshold: Float = 0.01
-        /// Minimum speech before flushing (4s of actual speech)
-        let minSpeechSamples = sampleRate * 4
+        /// Minimum speech before we're *willing* to flush (3s of actual speech content)
+        let minSpeechSamples = sampleRate * 3
+        /// Consecutive silent buffers — used to detect natural pause points for flushing.
+        var consecutiveSilentBuffers = 0
+        /// How many silent buffers = a "pause" (300ms at typical buffer sizes of ~100ms)
+        let silencePauseBuffers = 3
+        /// Whether we've reached the target and are waiting for a silence gap to flush.
+        var readyToFlush = false
 
         for await samples in audioStream {
             guard isTranscribing else { break }
@@ -132,32 +144,43 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
                 accumulatedAudio.removeFirst(accumulatedAudio.count - maxAccumulatedSamples)
             }
 
-            // Count speech energy in the new samples
+            // Track speech energy and silence gaps
             let rms = Self.computeRMS(samples)
-            if rms > speechRMSThreshold {
+            let isSpeech = rms > speechRMSThreshold
+            if isSpeech {
                 speechSamplesInAccumulator += samples.count
+                consecutiveSilentBuffers = 0
+            } else {
+                consecutiveSilentBuffers += 1
             }
 
-            let accumSecs = Double(sampleAccumulator.count) / Double(sampleRate)
-            let speechSecs = Double(speechSamplesInAccumulator) / Double(sampleRate)
+            let hasEnoughSpeech = speechSamplesInAccumulator >= minSpeechSamples
+            let isAtTarget = sampleAccumulator.count >= targetChunkSamples
+            let isAtMax = sampleAccumulator.count >= maxChunkSamples
+            let isInSilence = consecutiveSilentBuffers >= silencePauseBuffers
 
-            // Adaptive flush decision:
-            // 1. Hit max size → always flush (prevents unbounded accumulation)
-            // 2. Hit target size AND have enough speech → flush (normal case)
-            // 3. Below target → keep accumulating (wait for more speech)
+            // Flush decision: wait for a natural silence gap after accumulating enough.
+            // This prevents cutting someone mid-word/sentence.
             let shouldFlush: Bool
             let flushReason: String
-            if sampleAccumulator.count >= maxChunkSamples {
+
+            if isAtMax {
+                // Hard cap: flush regardless (prevents unbounded growth)
                 shouldFlush = true
                 flushReason = "max-cap"
-            } else if sampleAccumulator.count >= targetChunkSamples
-                        && speechSamplesInAccumulator >= minSpeechSamples {
+            } else if readyToFlush && isInSilence {
+                // We were waiting for silence — found it, flush now
                 shouldFlush = true
-                flushReason = "target+speech"
-            } else if sampleAccumulator.count >= minChunkSamples
-                        && speechSamplesInAccumulator >= targetChunkSamples {
+                flushReason = "silence-gap"
+            } else if isAtTarget && hasEnoughSpeech && isInSilence {
+                // Perfect: hit target, have speech, and we're in a pause
                 shouldFlush = true
-                flushReason = "speech-heavy"
+                flushReason = "target+silence"
+            } else if isAtTarget && hasEnoughSpeech {
+                // Hit target with speech but still talking — mark ready, wait for pause
+                readyToFlush = true
+                shouldFlush = false
+                flushReason = ""
             } else {
                 shouldFlush = false
                 flushReason = ""
@@ -168,10 +191,14 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
                 let chunkOffset = TimeInterval(accumulatedAudio.count - chunk.count) / TimeInterval(sampleRate)
                 let peakAmp = chunk.reduce(Float(0)) { max($0, abs($1)) }
                 let chunkRMS = Self.computeRMS(chunk)
+                let accumSecs = Double(chunk.count) / Double(sampleRate)
+                let speechSecs = Double(speechSamplesInAccumulator) / Double(sampleRate)
                 log("Flush [\(flushReason)]: \(String(format: "%.1f", accumSecs))s chunk, \(String(format: "%.1f", speechSecs))s speech, peak=\(String(format: "%.4f", peakAmp)), rms=\(String(format: "%.5f", chunkRMS))")
 
                 sampleAccumulator = []
                 speechSamplesInAccumulator = 0
+                consecutiveSilentBuffers = 0
+                readyToFlush = false
 
                 processChunk(chunk, offset: chunkOffset)
                 chunkIndex += 1
@@ -300,35 +327,55 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
 
         let rawDuration = String(format: "%.1f", Double(samples.count) / 16000.0)
 
-        // Strip silence: extract only speech regions so Parakeet gets dense audio.
-        // This prevents hallucinations caused by long silence gaps in chunks.
-        let stripped = Self.stripSilence(samples, windowSize: 1600, hopSize: 800, rmsThreshold: 0.01)
+        // Step 1: Normalize FIRST — boost quiet audio so silence stripping works correctly.
+        // Without this, quiet speakers (RMS ~0.015) get their speech stripped as "silence".
+        let normalized = Self.normalizeAudio(samples)
+        let preNormPeak = samples.reduce(Float(0)) { max($0, abs($1)) }
+        let postNormPeak = normalized.reduce(Float(0)) { max($0, abs($1)) }
+        let gain = preNormPeak > 0 ? postNormPeak / preNormPeak : 1.0
+
+        // Step 2: Strip silence from the normalized audio.
+        // Now quiet speech has been boosted, so the threshold correctly separates speech from silence.
+        let stripped = Self.stripSilence(normalized, windowSize: 1600, hopSize: 800, rmsThreshold: 0.02)
         let strippedDuration = Double(stripped.count) / 16000.0
 
         // Need at least 0.5s of speech to be worth transcribing
         guard stripped.count >= 8000 else {
-            log("Chunk #\(chunkCount): \(rawDuration)s → \(String(format: "%.1f", strippedDuration))s after strip — DROPPED (too short)")
+            log("Chunk #\(chunkCount): \(rawDuration)s → \(String(format: "%.1f", strippedDuration))s after norm+strip — DROPPED (too short)")
             return
         }
 
-        // Normalize audio volume — system capture is often much quieter than mic.
-        let normalized = Self.normalizeAudio(stripped)
-        let preNormPeak = stripped.reduce(Float(0)) { max($0, abs($1)) }
-        let postNormPeak = normalized.reduce(Float(0)) { max($0, abs($1)) }
-        let gain = preNormPeak > 0 ? postNormPeak / preNormPeak : 1.0
-
-        let result = model.transcribeWithLanguage(audio: normalized, sampleRate: 16000, language: language)
+        let result = model.transcribeWithLanguage(audio: stripped, sampleRate: 16000, language: language)
 
         let fullText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let preview = String(fullText.prefix(80))
         log("Chunk #\(chunkCount): \(rawDuration)s→\(String(format: "%.1f", strippedDuration))s conf=\(String(format: "%.2f", result.confidence)) lang=\(result.language ?? "?") gain=\(String(format: "%.1f", gain))x \"\(preview)\"")
 
-        // Log auto-detected language on first confident chunk
-        if language == nil && !languageLocked {
-            if result.confidence > 0.5, let lang = result.language, !lang.isEmpty {
-                let langCode = Self.languageNameToCode[lang.lowercased()] ?? lang
-                languageLocked = true
-                log("Detected language: \(lang) → \(langCode)")
+        // Language filtering (auto-detect mode only):
+        // When user forces a language (ES/EN), skip filtering — Parakeet's NLLanguageRecognizer
+        // runs on OUTPUT text which is unreliable (detects "Este." as English, keeps garbled mixed text).
+        // When auto-detect, use voting to lock and filter obvious mismatches.
+        if language == nil, let detectedLang = result.language, !detectedLang.isEmpty {
+            let langKey = detectedLang.lowercased()
+            let langCode = Self.languageNameToCode[langKey] ?? langKey
+            let normalizedCode = Self.spanishFamily.contains(langCode) ? "es" : langCode
+
+            languageVotes[normalizedCode, default: 0] += 1
+
+            if detectedSessionLanguage == nil {
+                if let (topLang, topCount) = languageVotes.max(by: { $0.value < $1.value }),
+                   topCount >= 4 {
+                    detectedSessionLanguage = topLang
+                    log("Language locked: \(topLang) (after \(topCount) votes)")
+                }
+            }
+
+            if let locked = detectedSessionLanguage, normalizedCode != locked {
+                let wordCount = fullText.split(separator: " ").count
+                if wordCount <= 3 {
+                    log("DROPPED: lang \(normalizedCode) \(wordCount)w != locked \(locked)")
+                    return
+                }
             }
         }
 
@@ -417,4 +464,8 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         "norwegian": "no", "danish": "da", "finnish": "fi", "greek": "el",
         "czech": "cs", "romanian": "ro", "hungarian": "hu", "catalan": "ca",
     ]
+
+    /// Languages phonetically similar to Spanish that Parakeet often confuses.
+    /// When user selects "es", accept these as valid instead of dropping.
+    private static let spanishFamily: Set<String> = ["es", "pt", "ca", "it"]
 }
