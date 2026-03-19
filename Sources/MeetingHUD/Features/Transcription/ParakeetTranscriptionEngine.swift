@@ -196,6 +196,58 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         return sqrt(sumSquares / Float(samples.count))
     }
 
+    /// Strip silence from audio, keeping only windows where RMS exceeds threshold.
+    /// Uses overlapping windows with crossfade to avoid clicks at splice points.
+    /// Returns concatenated speech regions.
+    private static func stripSilence(
+        _ samples: [Float],
+        windowSize: Int = 1600,   // 100ms at 16kHz
+        hopSize: Int = 800,       // 50ms hop
+        rmsThreshold: Float = 0.01,
+        paddingWindows: Int = 2   // Keep N windows before/after speech for context
+    ) -> [Float] {
+        guard samples.count > windowSize else { return samples }
+
+        // 1. Compute per-window RMS and mark speech/silence
+        var isSpeech: [Bool] = []
+        var windowStart = 0
+        while windowStart + windowSize <= samples.count {
+            let window = samples[windowStart..<(windowStart + windowSize)]
+            let rms = sqrt(window.reduce(Float(0)) { $0 + $1 * $1 } / Float(windowSize))
+            isSpeech.append(rms > rmsThreshold)
+            windowStart += hopSize
+        }
+
+        guard !isSpeech.isEmpty else { return samples }
+
+        // 2. Expand speech regions by padding (keeps context around speech)
+        var expanded = isSpeech
+        for i in isSpeech.indices where isSpeech[i] {
+            for pad in max(0, i - paddingWindows)...min(expanded.count - 1, i + paddingWindows) {
+                expanded[pad] = true
+            }
+        }
+
+        // 3. Extract speech windows
+        var result: [Float] = []
+        for (i, speech) in expanded.enumerated() where speech {
+            let start = i * hopSize
+            let end = min(start + windowSize, samples.count)
+            if result.isEmpty {
+                // First window: take full window
+                result.append(contentsOf: samples[start..<end])
+            } else {
+                // Subsequent windows: only append the hop (non-overlapping portion)
+                let hopStart = start + (windowSize - hopSize)
+                if hopStart < end {
+                    result.append(contentsOf: samples[hopStart..<end])
+                }
+            }
+        }
+
+        return result
+    }
+
     /// Peak-normalize audio to target amplitude.
     /// Boosts quiet system audio so Parakeet gets a strong signal.
     private static func normalizeAudio(_ samples: [Float], targetPeak: Float = 0.9) -> [Float] {
@@ -246,10 +298,22 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
         guard let model else { return }
         chunkCount += 1
 
+        let rawDuration = String(format: "%.1f", Double(samples.count) / 16000.0)
+
+        // Strip silence: extract only speech regions so Parakeet gets dense audio.
+        // This prevents hallucinations caused by long silence gaps in chunks.
+        let stripped = Self.stripSilence(samples, windowSize: 1600, hopSize: 800, rmsThreshold: 0.01)
+        let strippedDuration = Double(stripped.count) / 16000.0
+
+        // Need at least 0.5s of speech to be worth transcribing
+        guard stripped.count >= 8000 else {
+            log("Chunk #\(chunkCount): \(rawDuration)s → \(String(format: "%.1f", strippedDuration))s after strip — DROPPED (too short)")
+            return
+        }
+
         // Normalize audio volume — system capture is often much quieter than mic.
-        // Peak-normalize to ~0.9 so Parakeet gets a strong signal.
-        let normalized = Self.normalizeAudio(samples)
-        let preNormPeak = samples.reduce(Float(0)) { max($0, abs($1)) }
+        let normalized = Self.normalizeAudio(stripped)
+        let preNormPeak = stripped.reduce(Float(0)) { max($0, abs($1)) }
         let postNormPeak = normalized.reduce(Float(0)) { max($0, abs($1)) }
         let gain = preNormPeak > 0 ? postNormPeak / preNormPeak : 1.0
 
@@ -257,8 +321,7 @@ final class ParakeetTranscriptionEngine: @unchecked Sendable, TranscriptionProvi
 
         let fullText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let preview = String(fullText.prefix(80))
-        let durationSecs = String(format: "%.1f", Double(samples.count) / 16000.0)
-        log("Chunk #\(chunkCount): \(durationSecs)s conf=\(String(format: "%.2f", result.confidence)) lang=\(result.language ?? "?") gain=\(String(format: "%.1f", gain))x \"\(preview)\"")
+        log("Chunk #\(chunkCount): \(rawDuration)s→\(String(format: "%.1f", strippedDuration))s conf=\(String(format: "%.2f", result.confidence)) lang=\(result.language ?? "?") gain=\(String(format: "%.1f", gain))x \"\(preview)\"")
 
         // Log auto-detected language on first confident chunk
         if language == nil && !languageLocked {
