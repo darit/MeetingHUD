@@ -196,6 +196,7 @@ struct OverlayView: View {
         .sheet(isPresented: $appState.showSpeakerNamingSheet) {
             SpeakerNamingSheet(
                 speakerLabels: appState.speakers.map(\.name),
+                segments: appState.activeTranscriptSegments,
                 onComplete: { mapping in
                     appState.completeSpeakerNaming(nameMapping: mapping)
                 },
