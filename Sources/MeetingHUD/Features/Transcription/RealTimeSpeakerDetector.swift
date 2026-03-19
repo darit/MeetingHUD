@@ -145,12 +145,15 @@ actor RealTimeSpeakerDetector {
     /// Session mean embedding (channel fingerprint) — subtracted from all comparisons.
     private var sessionMean: [Float] = []
 
-    /// Match threshold AFTER channel compensation (much lower than raw cosine).
-    /// Low threshold for system audio where all voices go through the same codec/channel.
-    private let matchThreshold: Float = 0.20
+    /// Match threshold using raw cosine similarity.
+    /// System audio: same speaker typically 0.6-0.9, different speaker 0.3-0.5.
+    private let matchThreshold: Float = 0.45
 
     /// Minimum embeddings before we trust the session mean for compensation.
-    private let minEmbeddingsForCompensation = 3
+    /// Set very high to effectively disable channel compensation for system audio,
+    /// where raw cosine works much better (channel compensation subtracts useful
+    /// speaker info since all voices share the same channel).
+    private let minEmbeddingsForCompensation = 999
 
     /// EMA alpha for centroid updates (0.3 = new embedding gets 30% weight).
     private let centroidAlpha: Float = 0.3
